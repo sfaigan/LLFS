@@ -12,7 +12,7 @@ void test_InitLLFS() {
   InitLLFS();
   FILE* disk = fopen(vdisk_path, "r+");
   char* buffer = (char*)malloc(BLOCK_SIZE);
-  readBlock(disk, 0, buffer);
+  read_block(disk, 0, buffer);
   fclose(disk);
 
   int magic_number = MAGIC_NUMBER;
@@ -24,8 +24,6 @@ void test_InitLLFS() {
   int num_inodes_present = memcmp(buffer + sizeof(magic_number) + sizeof(num_blocks), &num_inodes, sizeof(num_inodes) != 0);
 
   free(buffer);
-
-
 
   if (magic_number_present == 0 && num_blocks_present == 0 && num_blocks_present == 0) {
     printf("PASS\n");
