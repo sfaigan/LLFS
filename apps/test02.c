@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../disk/CONSTANTS.h"
+#include "../io/CONSTANTS.h"
 #include "../disk/driver.h"
 #include "../io/File.h"
 
@@ -43,6 +43,6 @@ void test_InitLLFS() {
   fclose(disk);
 }
 
-void main() {
-  test_InitLLFS();
-}
+//void main() {
+//  test_InitLLFS();
+//}
