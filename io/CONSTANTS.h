@@ -11,6 +11,7 @@
 #define IMAP_BLOCK_INDEX 2
 #define ERROR -1
 #define SUCCESS 0
+#define NOT_FOUND -1
 #define MAX_FILE_NAME_LENGTH 30
 #define ROOT_DIR "root"
 #define vdisk_path "../disk/vdisk"

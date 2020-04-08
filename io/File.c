@@ -56,44 +56,73 @@ int get_free_inode_index() {
   return ERROR;
 }
 
-int get_first_data_block_from_inode_index(int inode_index, char* block) {
+int allocate_inode(INODE_NO inode_index, int size, int flags, BLK_NO* direct_blocks) {
+  char* block = calloc(BLOCK_SIZE, 1);
+  INode* new_inode = (INode*)malloc(sizeof(INode));
+  new_inode->size = size; // TODO: Implement file size
+  new_inode->flags = flags;
+  memcpy(new_inode->direct_blocks, direct_blocks, sizeof(BLK_NO)*10);
+  memcpy(block, new_inode, sizeof(INode));
+  free(new_inode);
+  // Write i-node to buffer
+  if (allocate_block(block) == ERROR) {
+    fprintf(stderr, "Unable to allocate a new block for the i-node.\n");
+    free(block);
+    return ERROR;
+  }
+  imap[inode_index] = log_tail+segment_tail+1; // the block number of the i-node
+  free(block);
+}
+
+int get_data_block_from_inode_index(int inode_index, int block_index, char* block) {
   BLK_NO inode_blk_no = imap[inode_index];
-  if (inode_blk_no == 0) {
+  if (!inode_blk_no) {
     fprintf(stderr, "ERROR: Unable to find inode from inode index %d.\n", inode_index);
     return ERROR;
   }
   INode *inode = (INode *) malloc(sizeof(INode));
   BLK_NO data_block_no;
-  // INode block is in the buffer segment
-  if (inode_blk_no > log_tail) {
+
+  if (inode_blk_no > log_tail) { // INode block is in the buffer segment
     memcpy(inode, buffer+(inode_blk_no-log_tail-1)*BLOCK_SIZE, sizeof(INode));
-    data_block_no = inode->direct_blocks[0];
-    if (data_block_no > log_tail) {
-      memcpy(block, buffer+(data_block_no-log_tail-1)*BLOCK_SIZE, BLOCK_SIZE);
-    } else {
-      FILE *disk = fopen(vdisk_path, "rb+");
-      read_block(disk, data_block_no, block);
-      fclose(disk);
-    }
-  } else {
+  } else { // INode block is on disk
     FILE *disk = fopen(vdisk_path, "rb+");
-    char *buf = calloc(BLOCK_SIZE, 1);
+    char* buf = calloc(BLOCK_SIZE, 1);
     read_block(disk, inode_blk_no, buf);
     memcpy(inode, buf, sizeof(INode));
-    data_block_no = inode->direct_blocks[0];
-    if (data_block_no > log_tail) {
-      memcpy(block, buffer + (data_block_no-log_tail-1) * BLOCK_SIZE, BLOCK_SIZE);
-    } else {
-      read_block(disk, inode->direct_blocks[0], block);
-    }
-    fclose(disk);
     free(buf);
+    fclose(disk);
   }
+
+  data_block_no = inode->direct_blocks[block_index];
   free(inode);
+  if (!data_block_no) {
+    fprintf(stderr, "ERROR: I-Node %d does not have a direct block at index %d.\n", inode_index, block_index);
+    return ERROR;
+  }
+  if (data_block_no > log_tail) { // Data block is in the buffer segment
+    memcpy(block, buffer + (data_block_no-log_tail-1) * BLOCK_SIZE, BLOCK_SIZE);
+  } else { // Data block is on disk
+    FILE *disk = fopen(vdisk_path, "rb+");
+    read_block(disk, inode->direct_blocks[0], block);
+    fclose(disk);
+  }
   return SUCCESS;
 }
 
+int get_file_inode_index(char* file_name, DirectoryEntry* parent_dir) {
+  for (int i = 0; i < DIRECTORY_CAPACITY; i++) {
+    if (!strcmp(parent_dir[i].file_name, file_name))
+      return parent_dir[i].inode_index;
+  }
+  return NOT_FOUND;
+}
+
 int add_file_to_dir(char* file_name, INODE_NO inode_index, DirectoryEntry* parent_dir) {
+  if (get_file_inode_index(file_name, parent_dir) != NOT_FOUND) {
+    fprintf(stderr, "ERROR: File %s already exists in parent directory.\n", file_name);
+    return ERROR;
+  }
   for (int i = 0; i < DIRECTORY_CAPACITY; i++) {
     if (!parent_dir[i].inode_index) {
       parent_dir[i].inode_index = inode_index;
@@ -108,49 +137,37 @@ int add_file_to_dir(char* file_name, INODE_NO inode_index, DirectoryEntry* paren
 // Traverse absolute path to get inode index of the deepest directory
 // Returns ERROR (-1) if for whatever reason it didn't already return with an inode index
 int get_leaf_dir_inode_index(char* path) {
-  INODE_NO parent_index = 0; // root
-  BLK_NO parent_inode_block_no = imap[parent_index];
+  INODE_NO parent_index = 0; // root inode index
   int i;
 
-  char directory_path[strlen(path)+1];
-  strcpy(directory_path, path);
+  // Tokenize path
+  char directory_path[strlen(path)+1]; // strtok manipulates given string
+  strcpy(directory_path, path); // need a new string to avoid segfault
   char* token = strtok(directory_path, "/");
-  if (token == NULL)
-    return parent_index; // root inode index
 
-  FILE* disk = fopen(vdisk_path, "rb+");
+  // If there is no token after first "/", the leaf directory is root
+  if (token == NULL)
+    return parent_index;
+
+  // Initialize a block buffer
   char* block = calloc(BLOCK_SIZE, 1);
-  INode* parent_inode = (INode*)malloc(sizeof(INode));
-  int parent_dir_data_block_no;
+
+  // parent_dir will start as the root directory's data block
   DirectoryEntry* parent_dir = (DirectoryEntry*)malloc(sizeof(DirectoryEntry)*DIRECTORY_CAPACITY);
 
   while (token != NULL) {
-    // Parent inode is in buffer segment
-    if (parent_inode_block_no > log_tail) {
-      memcpy(parent_inode, buffer+(parent_inode_block_no-log_tail-1)*BLOCK_SIZE, sizeof(INode));
-    } else {
-      read_block(disk, parent_inode_block_no, block);
-      memcpy(parent_inode, block, sizeof(INode));
-      memset(block, 0, BLOCK_SIZE);
-    }
-    parent_dir_data_block_no = parent_inode->direct_blocks[0];
-    if (parent_dir_data_block_no > log_tail) {
-      memcpy(parent_dir, buffer + (parent_dir_data_block_no - log_tail - 1) * BLOCK_SIZE, BLOCK_SIZE);
-    } else {
-      read_block(disk, parent_dir_data_block_no, block);
-      memcpy(parent_dir, block, BLOCK_SIZE);
-      memset(block, 0, BLOCK_SIZE);
-    }
+    get_data_block_from_inode_index(parent_index, 0, block);
+    memcpy(parent_dir, block, BLOCK_SIZE);
     for (i = 0; i < DIRECTORY_CAPACITY; i++) {
       if (!strcmp(token, parent_dir[i].file_name)) {
         parent_index = parent_dir[i].inode_index;
-        parent_inode_block_no = imap[parent_index];
         break;
       }
     }
     if (i == DIRECTORY_CAPACITY) {
       fprintf(stderr, "ERROR: Unable to resolve path.\n");
       free(block);
+      free(parent_dir);
       return ERROR;
     }
     memset(block, 0, BLOCK_SIZE);
@@ -179,7 +196,7 @@ int create_file(char* path, char file_name[30], int type) {
     DirectoryEntry* directory = (DirectoryEntry*)malloc(sizeof(DirectoryEntry)*DIRECTORY_CAPACITY);
     for (int i = 0; i < DIRECTORY_CAPACITY; i++) {
       directory[i].inode_index = 0; // 0 represents empty directory spot (and also root directory inode_index)
-      memcpy(directory[i].file_name, "test", sizeof("test"));
+      memcpy(directory[i].file_name, "empty", sizeof("test"));
       //directory[i].file_name[30] = '\0';
     }
     memcpy(block, directory, BLOCK_SIZE);
@@ -193,33 +210,22 @@ int create_file(char* path, char file_name[30], int type) {
   }
   memset(block, 0, BLOCK_SIZE);
 
-  // Initialize i-node
-  INode* new_inode = (INode*)malloc(sizeof(INode));
-  new_inode->size = 0; // TODO: Implement file size
-  new_inode->flags = type;
-  new_inode->direct_blocks[0] = log_tail+segment_tail+1; // the block number of the data block
-  memcpy(block, new_inode, sizeof(INode));
-  free(new_inode);
+  // Create i-node
+  BLK_NO data_block_numbers[10] = {0};
+  data_block_numbers[0] = log_tail+segment_tail+1;
+  allocate_inode(free_inode_index, 0, type, data_block_numbers);
 
-  // Write i-node to buffer
-  if (allocate_block(block) == ERROR) {
-    fprintf(stderr, "Unable to allocate a new block for the i-node.\n");
-    return ERROR;
-  }
   memset(block, 0, BLOCK_SIZE);
-
-  imap[free_inode_index] = log_tail+segment_tail+1; // the block number of the i-node
 
   // If the new file was not the root directory (there is a path)
   if (strlen(path)) {
     // Create a new data block for the parent directory
     DirectoryEntry parent_dir[16]; //= (DirectoryEntry *)malloc(sizeof(DirectoryEntry) * DIRECTORY_CAPACITY);
-    get_first_data_block_from_inode_index(parent_dir_inode_index, block);
+    get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
     memcpy(parent_dir, block, BLOCK_SIZE);
     memset(block, 0, BLOCK_SIZE);
     add_file_to_dir(file_name, free_inode_index, parent_dir);
     memcpy(block, parent_dir, BLOCK_SIZE);
-    //free(parent_dir);
 
     // Write data block to buffer
     if (allocate_block(block) == ERROR) {
@@ -228,21 +234,11 @@ int create_file(char* path, char file_name[30], int type) {
     }
     memset(block, 0, BLOCK_SIZE);
 
-    INode* new_parent_dir_inode = (INode*)malloc(sizeof(INode));
-    new_parent_dir_inode->size = 0; // TODO: Implement file size
-    new_parent_dir_inode->flags = DIRECTORY;
-    new_parent_dir_inode->direct_blocks[0] = log_tail+segment_tail+1; // the block number of the data block
-    memcpy(block, new_parent_dir_inode, sizeof(INode));
-    free(new_parent_dir_inode);
+    BLK_NO parent_dir_inode_direct_blocks[10] = {0};
+    parent_dir_inode_direct_blocks[0] = log_tail+segment_tail+1;
+    allocate_inode(parent_dir_inode_index, 0, DIRECTORY, parent_dir_inode_direct_blocks);
 
-    // Write i-node to buffer
-    if (allocate_block(block) == ERROR) {
-      fprintf(stderr, "Unable to allocate a new block for the i-node.\n");
-      return ERROR;
-    }
     memset(block, 0, BLOCK_SIZE);
-
-    imap[parent_dir_inode_index] = log_tail+segment_tail+1; // the block number of the i-node
   }
 
   free(block);
@@ -328,7 +324,7 @@ int execute_ls(char* path) {
   }
   printf("PATH: %s/\n", path);
   char* block = calloc(BLOCK_SIZE, 1);
-  get_first_data_block_from_inode_index(parent_dir_inode_index, block);
+  get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
   DirectoryEntry* parent_dir = (DirectoryEntry*)malloc(sizeof(DirectoryEntry)*DIRECTORY_CAPACITY);
   memcpy(parent_dir, block, BLOCK_SIZE);
   for (int i = 0; i < DIRECTORY_CAPACITY; i++) {
@@ -341,14 +337,12 @@ int execute_ls(char* path) {
   return SUCCESS;
 }
 
+// TODO: Duplicate file name checks
 int main() {
   InitLLFS();
   create_file("/", "abc", DATA_FILE);
-//  write_segment_to_disk();
   create_file("/", "test", DATA_FILE);
-//  write_segment_to_disk();
   create_file("/", "foo", DIRECTORY);
-//  write_segment_to_disk();
   create_file("/foo", "bar", DIRECTORY);
   create_file("/foo/bar", "baz", DATA_FILE);
   execute_ls("");
