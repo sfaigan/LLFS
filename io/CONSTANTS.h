@@ -1,8 +1,6 @@
-#define BLOCK_SIZE 512 // 0.5 KB
-#define NUM_BLOCKS 4096 // For some reason we're limiting ourselves to half of what we could have
 #define NUM_INODES 256 // fits into 1 byte
 #define MAGIC_NUMBER 4214869 // "abracadabra" as an int
-#define SEGMENT_SIZE 8 // buffer size (in blocks)
+#define SEGMENT_SIZE 16 // buffer size (in blocks)
 #define DIRECTORY_CAPACITY 16
 #define DATA_FILE 0
 #define DIRECTORY 1

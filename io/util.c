@@ -1,10 +1,12 @@
 #include "util.h"
+//#include <stdio.h>
 
 // https://stackoverflow.com/questions/47981/how-do-you-set-clear-and-toggle-a-single-bit
 // Set the bit to 1
 void set_block_free(unsigned char buffer[], int block_num) {
   int index = block_num / 8;
   int bit_index = block_num % 8;
+//  printf("Setting block %d free\n", block_num);
 
 //  printf("SET\n");
 //  printf("Index: %d\n", index);
@@ -16,6 +18,7 @@ void set_block_free(unsigned char buffer[], int block_num) {
 void set_block_full(unsigned char buffer[], int block_num) {
   int index = block_num / 8;
   int bit_index = block_num % 8;
+//  printf("Setting block %d full\n", block_num);
 
 //  printf("UNSET\n");
 //  printf("Index: %d\n", index);
