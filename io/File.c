@@ -134,6 +134,23 @@ int add_file_to_dir(char* file_name, INODE_NO inode_index, DirectoryEntry* paren
   return ERROR;
 }
 
+int remove_file_from_dir(char* file_name, DirectoryEntry* parent_dir) {
+  if (get_file_inode_index(file_name, parent_dir) == NOT_FOUND) {
+    fprintf(stderr, "ERROR: Cannot remove the directory entry for file %s from the "
+                    "provided directory because it does not exist.\n", file_name);
+    return ERROR;
+  }
+  for (int i = 0; i < DIRECTORY_CAPACITY; i++) {
+    if (!strcmp(parent_dir[i].file_name, file_name)) {
+      parent_dir[i].inode_index = 0;
+      strcpy(parent_dir[i].file_name, "empty"); //+1 because of null terminator
+      return SUCCESS;
+    }
+  }
+  fprintf(stderr, "ERROR: Could not remove directory entry for file %s from the provided directory.\n", file_name);
+  return ERROR;
+}
+
 // Traverse absolute path to get inode index of the deepest directory
 // Returns ERROR (-1) if for whatever reason it didn't already return with an inode index
 int get_leaf_dir_inode_index(char* path) {
@@ -240,13 +257,54 @@ int create_file(char* path, char file_name[30], int type) {
 
     memset(block, 0, BLOCK_SIZE);
   }
-
   free(block);
 }
 
-int delete_file() {
-  // imap[inode_id] = -1;
+int delete_file(char* path, char* file_name) {
+  // Get parent directory i-node index
+  int parent_dir_inode_index = get_leaf_dir_inode_index(path);
+  if (parent_dir_inode_index == ERROR) {
+    fprintf(stderr, "ERROR: Could not delete file %s/%s.\n", path, file_name);
+    return ERROR;
+  }
+  char *block = calloc(BLOCK_SIZE, 1);
+  int file_inode_index;
+
+  // Get parent directory data block
+  DirectoryEntry parent_dir[16];
+  get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
+  memcpy(parent_dir, block, BLOCK_SIZE);
+  memset(block, 0, BLOCK_SIZE);
+
+  // Get file's i-node index before we remove it from the directory
+  file_inode_index = get_file_inode_index(file_name, parent_dir);
+
+  // Remove file from its parent directory
+  if (remove_file_from_dir(file_name, parent_dir) == ERROR) {
+    fprintf(stderr, "ERROR: Could not delete file %s/%s.\n", path, file_name);
+    free(block);
+    return ERROR;
+  }
+  memcpy(block, parent_dir, BLOCK_SIZE);
+
+  // Free i-node once we know it's been removed from the parent directory
+  imap[file_inode_index] = 0; // free inode index
+
+  // Write new parent directory data block to buffer
+  if (allocate_block(block) == ERROR) {
+    fprintf(stderr, "ERROR: Unable to allocate a new block for data.\n");
+    free(block);
+    return ERROR;
+  }
+  memset(block, 0, BLOCK_SIZE);
+
+  // Create new i-node for parent directory
+  BLK_NO parent_dir_inode_direct_blocks[10] = {0};
+  parent_dir_inode_direct_blocks[0] = log_tail+segment_tail+1;
+  allocate_inode(parent_dir_inode_index, 0, DIRECTORY, parent_dir_inode_direct_blocks);
+
   // update free block vector
+  free(block);
   return 0;
 }
 
@@ -282,6 +340,7 @@ void InitLLFS() {
     exit(EXIT_FAILURE);
   }
 
+  // Initialize a single block buffer
   char* block = calloc(BLOCK_SIZE, 1);
 
   // SUPERBLOCK
@@ -350,5 +409,16 @@ int main() {
   execute_ls("/foo");
   printf("\n");
   execute_ls("/foo/bar");
+  printf("\n");
+  delete_file("", "abc");
+  execute_ls("");
+  printf("\n");
+  delete_file("", "test");
+  execute_ls("");
+  printf("\n");
+  create_file("/", "abc", DATA_FILE);
+  create_file("/", "test", DATA_FILE);
+  execute_ls("");
+  printf("\n");
   return 0;
 }
