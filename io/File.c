@@ -8,6 +8,7 @@
 #include "../disk/driver.h"
 
 char buffer[BLOCK_SIZE*SEGMENT_SIZE];
+unsigned char free_block_bitmap[BLOCK_SIZE];
 BLK_NO imap[NUM_INODES] = {0}; // assume 0 means free since 0 would never be the block number of an inode
 
 int log_tail; // keeps track of the last block in the log
@@ -15,25 +16,28 @@ int segment_tail; // keeps track of the last block in the segment
 
 int write_segment_to_disk() {
   FILE* disk = fopen(vdisk_path, "rb+");
+  char* block = calloc(BLOCK_SIZE, 1);
   // TODO: check if there is enough room on disk
   for (int i = 0; i <= segment_tail; i++) {
     log_tail++;
     write_block(disk, log_tail, buffer+(BLOCK_SIZE*i));
-    // TODO: update free block vector: set_block()
+    set_block_full(free_block_bitmap, log_tail);
   }
-  char* block = (char*)malloc(sizeof(imap));
+  memcpy(block, free_block_bitmap, BLOCK_SIZE);
+  write_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
+  memset(block, 0, BLOCK_SIZE);
   memcpy(block, imap, sizeof(imap));
   write_block(disk, IMAP_BLOCK_INDEX, block);
   segment_tail = -1;
   memset(buffer, 0, BLOCK_SIZE*SEGMENT_SIZE);
+  free(block);
   fclose(disk);
   return SUCCESS;
 }
 
 int allocate_block(void* data) {
-  segment_tail++;
   // must have room in the buffer
-  if (segment_tail > SEGMENT_SIZE-1) {
+  if (segment_tail >= SEGMENT_SIZE-1) {
     printf("Not enough room in buffer.\n");
     printf("Writing buffer segment to disk...\n");
     int status = write_segment_to_disk();
@@ -41,8 +45,9 @@ int allocate_block(void* data) {
       fprintf(stderr, "Failed to write buffer segment to disk.\n");
       return ERROR;
     }
-    segment_tail = 0;
+    segment_tail = -1;
   }
+  segment_tail++;
   memcpy(buffer + segment_tail*BLOCK_SIZE, data, BLOCK_SIZE);
   // TODO: mark block as full
   return SUCCESS;
@@ -182,7 +187,7 @@ int get_leaf_dir_inode_index(char* path) {
       }
     }
     if (i == DIRECTORY_CAPACITY) {
-      fprintf(stderr, "ERROR: Unable to resolve path.\n");
+      fprintf(stderr, "ERROR: Unable to find %s.\n", token);
       free(block);
       free(parent_dir);
       return ERROR;
@@ -208,6 +213,24 @@ int create_file(char* path, char file_name[30], int type) {
     return ERROR;
   }
   char* block = calloc(BLOCK_SIZE, 1);
+  DirectoryEntry parent_dir[16];
+
+  // NOTE to self:
+  // If the new file was not the root directory (there is a path)
+  // This IF check happens again later to continue the work with the parent directory
+  // but before we do that, we have to make the file itself, so these two blocks had to be broken up
+  if (strlen(path)) {
+    // Get parent directory data block, store it in parent_dir
+    get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
+    memcpy(parent_dir, block, BLOCK_SIZE);
+    memset(block, 0, BLOCK_SIZE); // flush buffer
+    // Try adding the file to the parent directory
+    if (add_file_to_dir(file_name, free_inode_index, parent_dir) == ERROR) {
+      free(block);
+      fprintf(stderr, "ERROR: Could not create file %s in directory %s.\n", file_name, path);
+      return ERROR;
+    }
+  }
 
   if (type == DIRECTORY) {
     DirectoryEntry* directory = (DirectoryEntry*)malloc(sizeof(DirectoryEntry)*DIRECTORY_CAPACITY);
@@ -236,12 +259,6 @@ int create_file(char* path, char file_name[30], int type) {
 
   // If the new file was not the root directory (there is a path)
   if (strlen(path)) {
-    // Create a new data block for the parent directory
-    DirectoryEntry parent_dir[16]; //= (DirectoryEntry *)malloc(sizeof(DirectoryEntry) * DIRECTORY_CAPACITY);
-    get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
-    memcpy(parent_dir, block, BLOCK_SIZE);
-    memset(block, 0, BLOCK_SIZE);
-    add_file_to_dir(file_name, free_inode_index, parent_dir);
     memcpy(block, parent_dir, BLOCK_SIZE);
 
     // Write data block to buffer
@@ -249,7 +266,7 @@ int create_file(char* path, char file_name[30], int type) {
       fprintf(stderr, "ERROR: Unable to allocate a new block for data.\n");
       return ERROR;
     }
-    memset(block, 0, BLOCK_SIZE);
+    memset(block, 0, BLOCK_SIZE); // flush buffer
 
     BLK_NO parent_dir_inode_direct_blocks[10] = {0};
     parent_dir_inode_direct_blocks[0] = log_tail+segment_tail+1;
@@ -264,7 +281,7 @@ int delete_file(char* path, char* file_name) {
   // Get parent directory i-node index
   int parent_dir_inode_index = get_leaf_dir_inode_index(path);
   if (parent_dir_inode_index == ERROR) {
-    fprintf(stderr, "ERROR: Could not delete file %s/%s.\n", path, file_name);
+    fprintf(stderr, "ERROR: Could not delete file %s in directory %s.\n", file_name, path);
     return ERROR;
   }
   char *block = calloc(BLOCK_SIZE, 1);
@@ -353,26 +370,28 @@ void InitLLFS() {
   // Write the superblock to the disk
   memcpy(block, sb, sizeof(Superblock));
   write_block(disk, SUPERBLOCK_INDEX, block);
+  memset(block, 0, BLOCK_SIZE);
 
   // FREE BLOCK VECTOR
   // Initialize the free block bitmap
-  memset(block, 0, BLOCK_SIZE);
+  memset(free_block_bitmap, 0xFF, BLOCK_SIZE);
   for (int i = 0; i < 10; i++)
-    set_block(block, i);
+    set_block_full(free_block_bitmap, i);
 
   // Write free block bitmap to the disk
-  write_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
+  memcpy(block, free_block_bitmap, BLOCK_SIZE);
+  write_block(disk, FREE_BLOCK_BITMAP_INDEX, free_block_bitmap);
 
   // Clean up
-  log_tail = 9; // next usable block
+  log_tail = 9; // last used block
   memset(buffer, 0, BLOCK_SIZE * SEGMENT_SIZE); // flush buffer
   segment_tail = -1;
-
-  create_root_directory();
-
   fclose(disk);
   free(block);
+
+  create_root_directory();
 }
+
 
 int execute_ls(char* path) {
   // check to see if path is valid
@@ -396,29 +415,35 @@ int execute_ls(char* path) {
   return SUCCESS;
 }
 
-// TODO: Duplicate file name checks
 int main() {
   InitLLFS();
+  FILE* disk = fopen(vdisk_path, "rb+");
+  char* block = calloc(BLOCK_SIZE, 1);
+  read_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
+  fclose(disk);
+  free(block);
   create_file("/", "abc", DATA_FILE);
   create_file("/", "test", DATA_FILE);
   create_file("/", "foo", DIRECTORY);
   create_file("/foo", "bar", DIRECTORY);
-  create_file("/foo/bar", "baz", DATA_FILE);
+//  create_file("/foo/bar", "baz", DATA_FILE);
   execute_ls("");
   printf("\n");
   execute_ls("/foo");
   printf("\n");
   execute_ls("/foo/bar");
-  printf("\n");
-  delete_file("", "abc");
-  execute_ls("");
-  printf("\n");
-  delete_file("", "test");
-  execute_ls("");
-  printf("\n");
-  create_file("/", "abc", DATA_FILE);
-  create_file("/", "test", DATA_FILE);
-  execute_ls("");
-  printf("\n");
+//  printf("\n");
+//  delete_file("", "abc");
+//  execute_ls("");
+//  printf("\n");
+//  delete_file("", "test");
+//  execute_ls("");
+//  printf("\n");
+//  create_file("/", "abc", DATA_FILE);
+//  create_file("/", "abc", DIRECTORY); // should not work
+//  create_file("/", "test", DATA_FILE);
+//  execute_ls("");
+//  printf("\n");
+  write_segment_to_disk();
   return 0;
 }
