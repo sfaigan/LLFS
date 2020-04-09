@@ -289,6 +289,11 @@ int create_file(char* path, char file_name[30], int type) {
   free(block);
 }
 
+int write_file(char* path, char* file_name, char* text) {
+  // if file does not exist, create it
+  // get file inode
+}
+
 int delete_file(char* path, char* file_name) {
   // Get parent directory i-node index
   int parent_dir_inode_index = get_leaf_dir_inode_index(path);
@@ -312,6 +317,18 @@ int delete_file(char* path, char* file_name) {
   INode* inode = (INode*)malloc(sizeof(INode));
   get_inode(file_inode_index, inode);
 
+  if (inode->flags == DIRECTORY) {
+    int i;
+    for (i = 0; i < 10; i++) {
+      if (inode->direct_blocks[i] != 0) {
+        fprintf(stderr, "ERROR: Cannot delete non-empty directory.\n");
+        free(inode);
+        free(block);
+        return ERROR;
+      }
+    }
+  }
+
   // Remove file from its parent directory
   if (remove_file_from_dir(file_name, parent_dir) == ERROR) {
     fprintf(stderr, "ERROR: Could not delete file %s/%s.\n", path, file_name);
@@ -323,6 +340,8 @@ int delete_file(char* path, char* file_name) {
   // Free i-node once we know it's been removed from the parent directory
   imap[file_inode_index] = 0; // free inode index
   set_block_free(free_block_bitmap, file_inode_block_no);  // Set parent directory's old data block free
+
+  // Free file's data blocks
   for (int i = 0; i < 10; i++)
     if (inode->direct_blocks[i] != 0)
       set_block_free(free_block_bitmap, inode->direct_blocks[i]);
@@ -467,10 +486,11 @@ int main() {
   delete_file("", "test");
   execute_ls("");
   printf("\n");
-//  create_file("/", "abc", DATA_FILE);
-//  create_file("/", "abc", DIRECTORY); // should not work
-//  create_file("/", "test", DATA_FILE);
-//  execute_ls("");
+  delete_file("", "foo");
+  create_file("/", "abc", DATA_FILE);
+  create_file("/", "abc", DIRECTORY); // should not work
+  create_file("/", "test", DATA_FILE);
+  execute_ls("");
   printf("\n");
   write_segment_to_disk();
   return 0;
