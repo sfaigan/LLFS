@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "File.h"
 #include "util.h"
 #include "typedefs.h"
@@ -98,13 +99,10 @@ int get_inode(int inode_index, INode* inode) {
   }
 }
 
-int get_data_block_from_inode_index(int inode_index, int block_index, char* block) {
-  INode* inode = (INode*)malloc(sizeof(INode));
-  get_inode(inode_index, inode);
+int get_data_block_from_inode(INode* inode, int block_index, char* block) {
   int data_block_no = inode->direct_blocks[block_index];
-  free(inode);
   if (!data_block_no) {
-    fprintf(stderr, "ERROR: I-Node %d does not have a direct block at index %d.\n", inode_index, block_index);
+    fprintf(stderr, "ERROR: Could not get direct block at index %d.\n", block_index);
     return ERROR;
   }
   if (data_block_no > log_tail) { // Data block is in the buffer segment
@@ -114,6 +112,16 @@ int get_data_block_from_inode_index(int inode_index, int block_index, char* bloc
     read_block(disk, data_block_no, block);
     fclose(disk);
   }
+  return data_block_no;
+}
+
+int get_data_block_from_inode_index(int inode_index, int block_index, char* block) {
+  INode* inode = (INode*)malloc(sizeof(INode));
+  get_inode(inode_index, inode);
+
+  int data_block_no = get_data_block_from_inode(inode, block_index, block);
+  free(inode);
+
   return data_block_no;
 }
 
@@ -290,8 +298,83 @@ int create_file(char* path, char file_name[30], int type) {
 }
 
 int write_file(char* path, char* file_name, char* text) {
+  // make sure it's not a directory
   // if file does not exist, create it
-  // get file inode
+  // create as many data blocks as needed for text
+  // update/create file inode
+  // increase size
+
+  // root directory or invalid path
+  if ((!strlen(path) && !strlen(file_name)) || !strcmp(file_name, ROOT_DIR)) {
+    fprintf(stderr, "ERROR: Path invalid.\n");
+    return ERROR;
+  }
+
+  // check to see if path is valid
+  int parent_dir_inode_index = get_leaf_dir_inode_index(path);
+  if (parent_dir_inode_index == ERROR) {
+    fprintf(stderr, "ERROR: Cannot resolve path %s\n", path);
+    return ERROR;
+  }
+
+  int num_blocks_needed = ceil(((double)strlen(text)+1)/512);
+  if (num_blocks_needed > 10) {
+    fprintf(stderr, "ERROR: Text is too long. Indirect blocks not supported, so text needs to be less than 5120 bytes.\n");
+    return ERROR;
+  }
+  int file_inode_index;
+  int i, j, num_blocks_occupied = 0;
+  char* block = calloc(BLOCK_SIZE, 1);
+  DirectoryEntry parent_dir[DIRECTORY_CAPACITY];
+  INode* file_inode = (INode*)malloc(sizeof(INode));
+  BLK_NO data_block_numbers[10] = {0};
+
+  // Get parent directory data block, store it in parent_dir
+  get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
+  memcpy(parent_dir, block, BLOCK_SIZE);
+  memset(block, 0, BLOCK_SIZE); // flush buffer
+  file_inode_index = get_file_inode_index(file_name, parent_dir);
+  get_inode(file_inode_index, file_inode);
+
+  for (i = 0; i < 10; i++) {
+    if (file_inode->direct_blocks[i] != 0) {
+      data_block_numbers[i] = file_inode->direct_blocks[i];
+      num_blocks_occupied++;
+    }
+  }
+  free(file_inode);
+  if (num_blocks_occupied == 1) {
+    char* zeros = calloc(BLOCK_SIZE, 1);
+    get_data_block_from_inode(file_inode, 0, block);
+    if (!memcmp(zeros, block, BLOCK_SIZE))
+      num_blocks_occupied = 0; // first block is actually empty
+    free(zeros);
+  }
+  if (num_blocks_needed > (10 - num_blocks_occupied)) {
+    fprintf(stderr, "ERROR: File already has data in it, and you've provided too much to fit in the remaining free direct blocks.\n");
+    return ERROR;
+  }
+
+  int bytes_of_text = BLOCK_SIZE;
+  int bytes_of_text_remaining;
+
+  for (i = num_blocks_occupied-1, j = 0; i < 10 && j < num_blocks_needed; i++, j++) {
+    bytes_of_text_remaining = strlen(text+(j*BLOCK_SIZE))+1;
+    if (bytes_of_text_remaining < BLOCK_SIZE)
+      bytes_of_text = bytes_of_text_remaining;
+    memcpy(block, text+(j*BLOCK_SIZE), bytes_of_text);
+    if (allocate_block(block) == ERROR) {
+      fprintf(stderr, "ERROR: Unable to allocate a new block for data.\n");
+      return ERROR;
+    }
+    memset(block, 0, BLOCK_SIZE);
+    data_block_numbers[i] = log_tail+segment_tail+1;
+  }
+  free(block);
+
+  // Create i-node
+  allocate_inode(file_inode_index, 0, DATA_FILE, data_block_numbers);
+
 }
 
 int delete_file(char* path, char* file_name) {
@@ -439,7 +522,6 @@ void InitLLFS() {
   create_root_directory();
 }
 
-
 int execute_ls(char* path) {
   // check to see if path is valid
   int parent_dir_inode_index = get_leaf_dir_inode_index(path);
@@ -469,27 +551,35 @@ int main() {
 //  read_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
 //  fclose(disk);
 //  free(block);
+  char* string = "\n"
+                 "\n"
+                 "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla in dui et dui ornare rhoncus non et turpis. Mauris a porta magna. Donec maximus cursus risus, sed placerat tellus pretium nec. Sed eu libero ornare, pulvinar dolor vitae, molestie arcu. Maecenas pellentesque egestas felis, eu ultricies metus ullamcorper sed. Sed volutpat, ligula eu egestas vestibulum, sem orci ultrices orci, vel tempor felis erat vel erat. Donec quis felis vitae nisi malesuada suscipit eu quis leo. Ut porta dictum cursus. Nam in molestie massa. Fusce molestie ligula eu diam aliquet condimentum. Nunc sit amet enim id turpis pretium hendrerit in id leo. Ut tempus hendrerit rutrum.\n"
+                 "\n"
+                 "Proin tristique consectetur orci non sollicitudin. Sed sodales leo quis condimentum efficitur. Pellentesque volutpat erat ut ligula tristique, id tincidunt ante consectetur. Mauris et est tempus, posuere nunc non, pharetra nisl. Nullam suscipit leo id dui mollis, a porttitor odio ultrices. Donec dapibus turpis nec volutpat sollicitudin. Vivamus elementum sed. "
+                 "\n";
   create_file("/", "abc", DATA_FILE);
-  create_file("/", "test", DATA_FILE);
-  create_file("/", "foo", DIRECTORY);
-  create_file("/foo", "bar", DIRECTORY);
-  create_file("/foo/bar", "baz", DATA_FILE);
-  execute_ls("");
-  printf("\n");
-  execute_ls("/foo");
-  printf("\n");
-  execute_ls("/foo/bar");
-  printf("\n");
-  delete_file("", "abc");
-  execute_ls("");
-  printf("\n");
-  delete_file("", "test");
-  execute_ls("");
-  printf("\n");
-  delete_file("", "foo");
-  create_file("/", "abc", DATA_FILE);
-  create_file("/", "abc", DIRECTORY); // should not work
-  create_file("/", "test", DATA_FILE);
+  write_file("/", "abc", string);
+  write_file("/", "abc", "additional text to be appended");
+//  create_file("/", "test", DATA_FILE);
+//  create_file("/", "foo", DIRECTORY);
+//  create_file("/foo", "bar", DIRECTORY);
+//  create_file("/foo/bar", "baz", DATA_FILE);
+//  execute_ls("");
+//  printf("\n");
+//  execute_ls("/foo");
+//  printf("\n");
+//  execute_ls("/foo/bar");
+//  printf("\n");
+//  delete_file("", "abc");
+//  execute_ls("");
+//  printf("\n");
+//  delete_file("", "test");
+//  execute_ls("");
+//  printf("\n");
+//  delete_file("", "foo");
+//  create_file("/", "abc", DATA_FILE);
+//  create_file("/", "abc", DIRECTORY); // should not work
+//  create_file("/", "test", DATA_FILE);
   execute_ls("");
   printf("\n");
   write_segment_to_disk();
