@@ -12,6 +12,8 @@ Shea Faigan
 * Interface with SEEsh
 * Raise directory capacity
     * This would mean allowing directories to have multiple blocks with up to 16 entries each
+* Implement editing existing data in a file (currently write_file() just allows appending)
+    * [Editing/deleting already written blocks in a data file was not required for this assignment](https://coursespaces.uvic.ca/mod/hsuforum/discuss.php?d=82627#p142343)
 
 ## Known Issues
 * If the disk fills up, all outdated blocks will be marked as free, but will not be cleared (see Future Work section). 

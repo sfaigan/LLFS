@@ -295,14 +295,19 @@ int create_file(char* path, char file_name[30], int type) {
     memset(block, 0, BLOCK_SIZE);
   }
   free(block);
+  return free_inode_index;
 }
 
-int write_file(char* path, char* file_name, char* text) {
+int write_file(char* path, char* file_name, char* string) {
   // make sure it's not a directory
   // if file does not exist, create it
   // create as many data blocks as needed for text
   // update/create file inode
   // increase size
+
+  // eviscerate the null terminator
+  char text[strlen(string)];
+  memcpy(text, string, strlen(string));
 
   // root directory or invalid path
   if ((!strlen(path) && !strlen(file_name)) || !strcmp(file_name, ROOT_DIR)) {
@@ -317,7 +322,8 @@ int write_file(char* path, char* file_name, char* text) {
     return ERROR;
   }
 
-  int num_blocks_needed = ceil(((double)strlen(text)+1)/512);
+  //int num_blocks_needed = ceil(((double)strlen(text)+1)/512);
+  int num_blocks_needed = ceil((double)sizeof(text)/512);
   if (num_blocks_needed > 10) {
     fprintf(stderr, "ERROR: Text is too long. Indirect blocks not supported, so text needs to be less than 5120 bytes.\n");
     return ERROR;
@@ -334,6 +340,9 @@ int write_file(char* path, char* file_name, char* text) {
   memcpy(parent_dir, block, BLOCK_SIZE);
   memset(block, 0, BLOCK_SIZE); // flush buffer
   file_inode_index = get_file_inode_index(file_name, parent_dir);
+  if (file_inode_index == NOT_FOUND) {
+    file_inode_index = create_file(path, file_name, DATA_FILE);
+  }
   get_inode(file_inode_index, file_inode);
 
   for (i = 0; i < 10; i++) {
@@ -342,27 +351,38 @@ int write_file(char* path, char* file_name, char* text) {
       num_blocks_occupied++;
     }
   }
-  free(file_inode);
   if (num_blocks_occupied == 1) {
     char* zeros = calloc(BLOCK_SIZE, 1);
     get_data_block_from_inode(file_inode, 0, block);
     if (!memcmp(zeros, block, BLOCK_SIZE))
       num_blocks_occupied = 0; // first block is actually empty
     free(zeros);
+    memset(block, 0, BLOCK_SIZE);
   }
   if (num_blocks_needed > (10 - num_blocks_occupied)) {
     fprintf(stderr, "ERROR: File already has data in it, and you've provided too much to fit in the remaining free direct blocks.\n");
     return ERROR;
   }
 
-  int bytes_of_text = BLOCK_SIZE;
+//  char* partial_block = NULL;
+//  if (num_blocks_occupied > 0) {
+//    get_data_block_from_inode(file_inode, num_blocks_occupied-1, block);
+//    if (strlen(block) != BLOCK_SIZE) {
+//      printf("test");
+//    }
+//  }
+  free(file_inode);
+
+  int bytes_of_text;
   int bytes_of_text_remaining;
 
-  for (i = num_blocks_occupied-1, j = 0; i < 10 && j < num_blocks_needed; i++, j++) {
-    bytes_of_text_remaining = strlen(text+(j*BLOCK_SIZE))+1;
+  for (i = num_blocks_occupied, j = 0; i < 10 && j < num_blocks_needed; i++, j++) {
+    bytes_of_text = BLOCK_SIZE;
+    //bytes_of_text_remaining = strlen(text+(j*BLOCK_SIZE)) +1;
+    bytes_of_text_remaining = sizeof(text)-(j*BLOCK_SIZE);// +1;
     if (bytes_of_text_remaining < BLOCK_SIZE)
       bytes_of_text = bytes_of_text_remaining;
-    memcpy(block, text+(j*BLOCK_SIZE), bytes_of_text);
+    memcpy(block, &text[j*BLOCK_SIZE], bytes_of_text);
     if (allocate_block(block) == ERROR) {
       fprintf(stderr, "ERROR: Unable to allocate a new block for data.\n");
       return ERROR;
@@ -373,8 +393,48 @@ int write_file(char* path, char* file_name, char* text) {
   free(block);
 
   // Create i-node
-  allocate_inode(file_inode_index, 0, DATA_FILE, data_block_numbers);
+  return allocate_inode(file_inode_index, 0, DATA_FILE, data_block_numbers);
+}
 
+int read_file(char* path, char* file_name, char* buf) {
+  if ((!strlen(path) && !strlen(file_name)) || !strcmp(file_name, ROOT_DIR)) {
+    fprintf(stderr, "ERROR: Path invalid.\n");
+    return ERROR;
+  }
+
+  // check to see if path is valid
+  int parent_dir_inode_index = get_leaf_dir_inode_index(path);
+  if (parent_dir_inode_index == ERROR) {
+    fprintf(stderr, "ERROR: Cannot resolve path %s\n", path);
+    return ERROR;
+  }
+
+  int file_inode_index;
+  int i;
+  DirectoryEntry parent_dir[DIRECTORY_CAPACITY];
+  char* block = calloc(BLOCK_SIZE, 1);
+
+  // Get parent directory data block, store it in parent_dir
+  get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
+  memcpy(parent_dir, block, BLOCK_SIZE);
+  free(block);
+  file_inode_index = get_file_inode_index(file_name, parent_dir);
+  if (file_inode_index == NOT_FOUND) {
+     fprintf(stderr, "ERROR: Could not locate file %s in path %s.\n", file_name, path);
+     return ERROR;
+  }
+  INode* file_inode = (INode*)malloc(sizeof(INode));
+  get_inode(file_inode_index, file_inode);
+  int blocks_full = 0;
+
+  for (i = 0; i < 10; i++) {
+    if (file_inode->direct_blocks[i] != 0) {
+      blocks_full++;
+      get_data_block_from_inode(file_inode, i, buf+(i*BLOCK_SIZE));
+    }
+  }
+  free(file_inode);
+  return blocks_full;
 }
 
 int delete_file(char* path, char* file_name) {
@@ -522,6 +582,7 @@ void InitLLFS() {
   create_root_directory();
 }
 
+// INTERFACING FUNCTIONS
 int execute_ls(char* path) {
   // check to see if path is valid
   int parent_dir_inode_index = get_leaf_dir_inode_index(path);
@@ -544,6 +605,25 @@ int execute_ls(char* path) {
   return SUCCESS;
 }
 
+int execute_mkdir(char* path, char* directory_name) {
+  return create_file(path, directory_name, DIRECTORY);
+}
+
+int execute_rm(char* path, char*  file_name) {
+  return delete_file(path, file_name);
+}
+
+// Prints a file character by character
+int print_file(char* path, char* file_name) {
+  char* buf = calloc(BLOCK_SIZE*10, 1);
+  int blocks_in_file = read_file(path, file_name, buf);
+  for (int i = 0; i < blocks_in_file*BLOCK_SIZE; i++)
+    if (buf[i] != 0x0)
+      putchar(buf[i]);
+  printf("\n");
+  free(buf);
+}
+
 int main() {
   InitLLFS();
 //  FILE* disk = fopen(vdisk_path, "rb+");
@@ -551,15 +631,14 @@ int main() {
 //  read_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
 //  fclose(disk);
 //  free(block);
-  char* string = "\n"
+  char* string = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla in dui et dui ornare rhoncus non et turpis. Mauris a porta magna. Donec maximus cursus risus, sed placerat tellus pretium nec. Sed eu libero ornare, pulvinar dolor vitae, molestie arcu. Maecenas pellentesque egestas felis, eu ultricies metus ullamcorper sed. Sed volutpat, ligula eu egestas vestibulum, sem orci ultrices orci, vel tempor felis erat vel erat. Donec quis felis vitae nisi malesuada suscipit eu quis leo. Ut porta dictum cursus. Nam in molestie massa. Fusce molestie ligula eu diam aliquet condimentum. Nunc sit amet enim id turpis pretium hendrerit in id leo. Ut tempus hendrerit rutrum.\n"
                  "\n"
-                 "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla in dui et dui ornare rhoncus non et turpis. Mauris a porta magna. Donec maximus cursus risus, sed placerat tellus pretium nec. Sed eu libero ornare, pulvinar dolor vitae, molestie arcu. Maecenas pellentesque egestas felis, eu ultricies metus ullamcorper sed. Sed volutpat, ligula eu egestas vestibulum, sem orci ultrices orci, vel tempor felis erat vel erat. Donec quis felis vitae nisi malesuada suscipit eu quis leo. Ut porta dictum cursus. Nam in molestie massa. Fusce molestie ligula eu diam aliquet condimentum. Nunc sit amet enim id turpis pretium hendrerit in id leo. Ut tempus hendrerit rutrum.\n"
-                 "\n"
-                 "Proin tristique consectetur orci non sollicitudin. Sed sodales leo quis condimentum efficitur. Pellentesque volutpat erat ut ligula tristique, id tincidunt ante consectetur. Mauris et est tempus, posuere nunc non, pharetra nisl. Nullam suscipit leo id dui mollis, a porttitor odio ultrices. Donec dapibus turpis nec volutpat sollicitudin. Vivamus elementum sed. "
+                 "Proin tristique consectetur orci non sollicitudin. Sed sodales leo quis condimentum efficitur. Pellentesque volutpat erat ut ligula tristique, id tincidunt ante consectetur. Mauris et est tempus, posuere nunc non, pharetra nisl. Nullam suscipit leo id dui mollis, a porttitor odio ultrices. Donec dapibus turpis nec volutpat sollicitudin. Vivamus elementum sed."
                  "\n";
   create_file("/", "abc", DATA_FILE);
   write_file("/", "abc", string);
   write_file("/", "abc", "additional text to be appended");
+  print_file("/", "abc");
 //  create_file("/", "test", DATA_FILE);
 //  create_file("/", "foo", DIRECTORY);
 //  create_file("/foo", "bar", DIRECTORY);
