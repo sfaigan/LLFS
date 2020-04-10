@@ -680,7 +680,7 @@ int test_goal3() {
   int file_text_present, file_present, foo_present, foobar_present; // flags
 
   simulate_crash();
-  RecoverLLFS();
+  AttachLLFS();
 
   block = malloc(BLOCK_SIZE);
   read_file("/", "test", block);

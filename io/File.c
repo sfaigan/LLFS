@@ -608,7 +608,7 @@ void InitLLFS() {
   create_root_directory();
 }
 
-void RecoverLLFS() {
+void AttachLLFS() {
   FILE* disk = fopen(vdisk_path, "rb");
   if (!disk) {
     fprintf(stderr, "ERROR: Could not open %s.\n", vdisk_path);
@@ -667,6 +667,10 @@ int execute_ls(char* path) {
 
 int execute_mkdir(char* path, char* directory_name) {
   return create_file(path, directory_name, DIRECTORY);
+}
+
+int execute_touch(char* path, char* file_name) {
+  return create_file(path, file_name, DATA_FILE);
 }
 
 int execute_rm(char* path, char*  file_name) {
