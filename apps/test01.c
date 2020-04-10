@@ -618,11 +618,11 @@ int test_goal2d() {
   }
 
   if (files_before_deletion && dirs_before_deletion && files_after_deletion && dirs_after_deletion && non_empty_test) {
-    printf("\nGOAL 2c: PASS\n");
+    printf("\nGOAL 2d: PASS\n");
     printf("Ignore the (intentional) error.\nIt is because we tested deleting a non-empty directory.\n\n");
     return 1;
   } else {
-    printf("\nGOAL 2c: FAIL\n");
+    printf("\nGOAL 2d: FAIL\n");
     if (file1_before_deletion == NOT_FOUND) printf("File 1 was not created properly.\n");
     if (file1_after_deletion != NOT_FOUND) printf("File 1 was not deleted properly.\n");
     if (file2_before_deletion == NOT_FOUND) printf("File 2 was not created properly.\n");
@@ -680,6 +680,7 @@ int test_goal3() {
   int file_text_present, file_present, foo_present, foobar_present; // flags
 
   simulate_crash();
+  printf("Mounting disk...\n");
   AttachLLFS();
 
   block = malloc(BLOCK_SIZE);
@@ -699,6 +700,7 @@ int test_goal3() {
   foobar_present = strcmp("bar", foo[0].file_name);
 
   if (!file_text_present && !file_present && !foo_present && !foobar_present) {
+    printf("\nDisk recovery successful.\n");
     printf("\nGOAL 3: PASS\n\n");
     return 1;
   } else {

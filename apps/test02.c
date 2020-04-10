@@ -11,9 +11,10 @@
 // Goal 1: Can manipulate a simulated disk and format that disk with your version of LLFS
 // Checks if the superblock and free block bitmap were initialized correctly
 int test_goal1() {
-  printf("\ntest_InitLLFS: ");
+  printf("TESTING GOAL 1: Creating and mounting a disk\n"
+         "============================================\n");
   InitLLFS();
-  FILE* disk = fopen(vdisk_path, "r+");
+  FILE* disk = fopen(vdisk_path, "rb");
   char* buffer = (char*)malloc(BLOCK_SIZE);
   read_block(disk, 0, buffer);
 
@@ -37,10 +38,10 @@ int test_goal1() {
   fclose(disk);
 
   if (magic_number_present == 0 && num_blocks_present == 0 && num_blocks_present == 0 && bitmap_present == 0) {
-    printf("PASS\n\n");
+    printf("GOAL 1: PASS\n\n");
     return 1;
   } else {
-    printf("FAIL\n\n");
+    printf("GOAL 1: FAIL\n\n");
     if (magic_number_present != 0)
       printf("Magic number not contained in first 4 bytes of superblock.\n");
     if (num_blocks_present != 0)
