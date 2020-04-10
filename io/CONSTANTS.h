@@ -13,5 +13,3 @@
 #define MAX_FILE_NAME_LENGTH 30
 #define ROOT_DIR "root"
 #define vdisk_path "../disk/vdisk"
-#define FREE 1
-#define FULL 0

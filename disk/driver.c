@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include "driver.h"
-#include "CONSTANTS.h"
 
 void read_block(FILE* disk, int block_number, char* buffer) {
   fseek(disk, block_number * BLOCK_SIZE, SEEK_SET);

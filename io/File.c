@@ -4,21 +4,43 @@
 #include <math.h>
 #include "File.h"
 #include "util.h"
-#include "typedefs.h"
-#include "CONSTANTS.h"
 #include "../disk/driver.h"
 
 char buffer[BLOCK_SIZE*SEGMENT_SIZE];
 unsigned char free_block_bitmap[BLOCK_SIZE];
-BLK_NO imap[NUM_INODES] = {0}; // assume 0 means free since 0 would never be the block number of an inode
+BLK_NO imap[NUM_INODES];
 
 int log_tail; // keeps track of the last block in the log
 int segment_tail; // keeps track of the last block in the segment
 
+void get_directory_entries_from_inode(INode* inode, DirectoryEntry dir[]){
+  char* block = calloc(BLOCK_SIZE, 1);
+  get_data_block_from_inode(inode, 0, block);
+  memcpy(dir, block, sizeof(DirectoryEntry)*DIRECTORY_CAPACITY);
+  free(block);
+}
+
+void get_directory_entries_from_inode_index(int inode_index, DirectoryEntry dir[]) {
+  INode* inode = (INode*)malloc(sizeof(INode));
+  get_inode(inode_index, inode);
+  get_directory_entries_from_inode(inode, dir);
+  free(inode);
+}
+
+int get_log_tail_from_free_block_bitmap() {
+  int i, j, k;
+  for (i = NUM_BLOCKS - 1; i >= 0; i--) {
+    j = i / 8;
+    k = i % 8;
+    if (!(free_block_bitmap[j] & (1 << k)))
+      return i;
+  }
+  return -1;
+}
+
 int write_segment_to_disk() {
   FILE* disk = fopen(vdisk_path, "rb+");
   char* block = calloc(BLOCK_SIZE, 1);
-  // TODO: check if there is enough room on disk
   for (int i = 0; i <= segment_tail; i++) {
     log_tail++;
     write_block(disk, log_tail, buffer+(BLOCK_SIZE*i));
@@ -38,8 +60,6 @@ int write_segment_to_disk() {
 int allocate_block(void* data) {
   // must have room in the buffer
   if (segment_tail >= SEGMENT_SIZE-1) {
-    printf("\nNot enough room in buffer.\n");
-    printf("Writing buffer segment to disk...\n\n");
     int status = write_segment_to_disk();
     if (status == ERROR) {
       fprintf(stderr, "Failed to write buffer segment to disk.\n");
@@ -50,7 +70,6 @@ int allocate_block(void* data) {
   segment_tail++;
   memcpy(buffer + segment_tail*BLOCK_SIZE, data, BLOCK_SIZE);
   set_block_full(free_block_bitmap, log_tail+segment_tail+1);
-  // TODO: mark block as full
   return SUCCESS;
 }
 
@@ -97,12 +116,12 @@ int get_inode(int inode_index, INode* inode) {
     free(buf);
     fclose(disk);
   }
+  return inode_blk_no;
 }
 
 int get_data_block_from_inode(INode* inode, int block_index, char* block) {
   int data_block_no = inode->direct_blocks[block_index];
   if (!data_block_no) {
-    fprintf(stderr, "ERROR: Could not get direct block at index %d.\n", block_index);
     return ERROR;
   }
   if (data_block_no > log_tail) { // Data block is in the buffer segment
@@ -205,11 +224,15 @@ int get_leaf_dir_inode_index(char* path) {
     memset(block, 0, BLOCK_SIZE);
     token = strtok(NULL, "/");
   }
+  free(parent_dir);
   free(block);
   return parent_index;
 }
 
 int create_file(char* path, char file_name[30], int type) {
+  if (segment_tail+2 >= SEGMENT_SIZE-1)
+    write_segment_to_disk();
+
   // check to see if there are any free inode blocks
   int free_inode_index = get_free_inode_index();
   if (free_inode_index == ERROR) {
@@ -232,6 +255,8 @@ int create_file(char* path, char file_name[30], int type) {
   // This IF check happens again later to continue the work with the parent directory
   // but before we do that, we have to make the file itself, so these two blocks had to be broken up
   if (strlen(path)) {
+    if (segment_tail+4 >= SEGMENT_SIZE-1)
+      write_segment_to_disk(); // prevent corruption
     // Get parent directory data block, store it in parent_dir
     parent_dir_data_block_no = get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
     parent_dir_inode_block_no = (int)imap[parent_dir_inode_index];
@@ -249,8 +274,6 @@ int create_file(char* path, char file_name[30], int type) {
     DirectoryEntry* directory = (DirectoryEntry*)malloc(sizeof(DirectoryEntry)*DIRECTORY_CAPACITY);
     for (int i = 0; i < DIRECTORY_CAPACITY; i++) {
       directory[i].inode_index = 0; // 0 represents empty directory spot (and also root directory inode_index)
-      memcpy(directory[i].file_name, "empty", sizeof("test"));
-      //directory[i].file_name[30] = '\0';
     }
     memcpy(block, directory, BLOCK_SIZE);
     free(directory);
@@ -275,7 +298,7 @@ int create_file(char* path, char file_name[30], int type) {
     // Write new data block for parent directory to buffer
     memcpy(block, parent_dir, BLOCK_SIZE);
     if (allocate_block(block) == ERROR) {
-      fprintf(stderr, "ERROR: Unable to allocate a new block for data.\n");
+      //fprintf(stderr, "ERROR: Unable to allocate a new block for data.\n");
       return ERROR;
     }
     memset(block, 0, BLOCK_SIZE); // flush buffer
@@ -298,7 +321,8 @@ int create_file(char* path, char file_name[30], int type) {
   return free_inode_index;
 }
 
-int write_file(char* path, char* file_name, char* string) {
+// Assumes string is null terminated!
+int write_str_to_file(char* path, char* file_name, char* string) {
   // make sure it's not a directory
   // if file does not exist, create it
   // create as many data blocks as needed for text
@@ -359,26 +383,18 @@ int write_file(char* path, char* file_name, char* string) {
     free(zeros);
     memset(block, 0, BLOCK_SIZE);
   }
+  free(file_inode);
+
   if (num_blocks_needed > (10 - num_blocks_occupied)) {
     fprintf(stderr, "ERROR: File already has data in it, and you've provided too much to fit in the remaining free direct blocks.\n");
     return ERROR;
   }
-
-//  char* partial_block = NULL;
-//  if (num_blocks_occupied > 0) {
-//    get_data_block_from_inode(file_inode, num_blocks_occupied-1, block);
-//    if (strlen(block) != BLOCK_SIZE) {
-//      printf("test");
-//    }
-//  }
-  free(file_inode);
 
   int bytes_of_text;
   int bytes_of_text_remaining;
 
   for (i = num_blocks_occupied, j = 0; i < 10 && j < num_blocks_needed; i++, j++) {
     bytes_of_text = BLOCK_SIZE;
-    //bytes_of_text_remaining = strlen(text+(j*BLOCK_SIZE)) +1;
     bytes_of_text_remaining = sizeof(text)-(j*BLOCK_SIZE);// +1;
     if (bytes_of_text_remaining < BLOCK_SIZE)
       bytes_of_text = bytes_of_text_remaining;
@@ -461,9 +477,11 @@ int delete_file(char* path, char* file_name) {
   get_inode(file_inode_index, inode);
 
   if (inode->flags == DIRECTORY) {
-    int i;
-    for (i = 0; i < 10; i++) {
-      if (inode->direct_blocks[i] != 0) {
+    DirectoryEntry dir[DIRECTORY_CAPACITY];
+    get_directory_entries_from_inode(inode, dir);
+    for (int i = 0; i < 10; i++) {
+      if (dir[i].inode_index != 0) {
+        fflush(stderr);
         fprintf(stderr, "ERROR: Cannot delete non-empty directory.\n");
         free(inode);
         free(block);
@@ -512,6 +530,7 @@ int delete_file(char* path, char* file_name) {
 
   // update free block vector
   free(block);
+  if (inode) free(inode);
   return 0;
 }
 
@@ -532,6 +551,8 @@ int create_disk() {
 
 // Create and mount the disk (I think)
 void InitLLFS() {
+  int i;
+
   /* CREATE DISK */
   // Fill with 0's
   if (create_disk() == ERROR) {
@@ -565,24 +586,63 @@ void InitLLFS() {
   // FREE BLOCK VECTOR
   // Initialize the free block bitmap
   memset(free_block_bitmap, 0xFF, BLOCK_SIZE);
-  for (int i = 0; i < 10; i++)
+  for (i = 0; i < 10; i++)
     set_block_full(free_block_bitmap, i);
 
   // Write free block bitmap to the disk
   memcpy(block, free_block_bitmap, BLOCK_SIZE);
-  write_block(disk, FREE_BLOCK_BITMAP_INDEX, free_block_bitmap);
+  write_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
+
+  // Initialize imap
+  for(i = 0; i < NUM_INODES; i++)
+    imap[i] = 0; // assume 0 means free since 0 would never be the block number of an inode
 
   // Clean up
   log_tail = 9; // last used block
   memset(buffer, 0, BLOCK_SIZE * SEGMENT_SIZE); // flush buffer
   segment_tail = -1;
-  fclose(disk);
+  free(sb);
   free(block);
+  fclose(disk);
 
   create_root_directory();
 }
 
-// INTERFACING FUNCTIONS
+void RecoverLLFS() {
+  FILE* disk = fopen(vdisk_path, "rb");
+  if (!disk) {
+    fprintf(stderr, "ERROR: Could not open %s.\n", vdisk_path);
+    exit(EXIT_FAILURE);
+  }
+  // Initialize a single block buffer
+  char* block = calloc(BLOCK_SIZE, 1);
+
+  // Load free block bitmap into memory
+  read_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
+  memcpy(free_block_bitmap, block, BLOCK_SIZE);
+  memset(block, 0, BLOCK_SIZE);
+
+  // Load imap into memory
+  read_block(disk, IMAP_BLOCK_INDEX, block);
+  memcpy(imap, block, BLOCK_SIZE);
+
+  // Clean up
+  free(block);
+  fclose(disk);
+
+  // Set the log and segment tails
+  log_tail = get_log_tail_from_free_block_bitmap(); // last used block
+  if (log_tail == -1) {
+    fprintf(stderr, "ERROR: Failed to recover log tail block number.\n");
+    exit(EXIT_FAILURE);
+  }
+  segment_tail = -1; // segment is empty
+
+  // Flush the buffer
+  memset(buffer, 0, BLOCK_SIZE * SEGMENT_SIZE);
+}
+
+// USER FACING FUNCTIONS
 int execute_ls(char* path) {
   // check to see if path is valid
   int parent_dir_inode_index = get_leaf_dir_inode_index(path);
@@ -613,7 +673,6 @@ int execute_rm(char* path, char*  file_name) {
   return delete_file(path, file_name);
 }
 
-// Prints a file character by character
 int print_file(char* path, char* file_name) {
   char* buf = calloc(BLOCK_SIZE*10, 1);
   int blocks_in_file = read_file(path, file_name, buf);
@@ -622,45 +681,5 @@ int print_file(char* path, char* file_name) {
       putchar(buf[i]);
   printf("\n");
   free(buf);
-}
-
-int main() {
-  InitLLFS();
-//  FILE* disk = fopen(vdisk_path, "rb+");
-//  char* block = calloc(BLOCK_SIZE, 1);
-//  read_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
-//  fclose(disk);
-//  free(block);
-  char* string = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla in dui et dui ornare rhoncus non et turpis. Mauris a porta magna. Donec maximus cursus risus, sed placerat tellus pretium nec. Sed eu libero ornare, pulvinar dolor vitae, molestie arcu. Maecenas pellentesque egestas felis, eu ultricies metus ullamcorper sed. Sed volutpat, ligula eu egestas vestibulum, sem orci ultrices orci, vel tempor felis erat vel erat. Donec quis felis vitae nisi malesuada suscipit eu quis leo. Ut porta dictum cursus. Nam in molestie massa. Fusce molestie ligula eu diam aliquet condimentum. Nunc sit amet enim id turpis pretium hendrerit in id leo. Ut tempus hendrerit rutrum.\n"
-                 "\n"
-                 "Proin tristique consectetur orci non sollicitudin. Sed sodales leo quis condimentum efficitur. Pellentesque volutpat erat ut ligula tristique, id tincidunt ante consectetur. Mauris et est tempus, posuere nunc non, pharetra nisl. Nullam suscipit leo id dui mollis, a porttitor odio ultrices. Donec dapibus turpis nec volutpat sollicitudin. Vivamus elementum sed."
-                 "\n";
-  create_file("/", "abc", DATA_FILE);
-  write_file("/", "abc", string);
-  write_file("/", "abc", "additional text to be appended");
-  print_file("/", "abc");
-//  create_file("/", "test", DATA_FILE);
-//  create_file("/", "foo", DIRECTORY);
-//  create_file("/foo", "bar", DIRECTORY);
-//  create_file("/foo/bar", "baz", DATA_FILE);
-//  execute_ls("");
-//  printf("\n");
-//  execute_ls("/foo");
-//  printf("\n");
-//  execute_ls("/foo/bar");
-//  printf("\n");
-//  delete_file("", "abc");
-//  execute_ls("");
-//  printf("\n");
-//  delete_file("", "test");
-//  execute_ls("");
-//  printf("\n");
-//  delete_file("", "foo");
-//  create_file("/", "abc", DATA_FILE);
-//  create_file("/", "abc", DIRECTORY); // should not work
-//  create_file("/", "test", DATA_FILE);
-  execute_ls("");
-  printf("\n");
-  write_segment_to_disk();
-  return 0;
+  return SUCCESS;
 }

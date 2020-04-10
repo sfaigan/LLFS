@@ -8,7 +8,10 @@
 #include "../disk/driver.h"
 #include "../io/File.h"
 
-void test_InitLLFS() {
+// Goal 1: Can manipulate a simulated disk and format that disk with your version of LLFS
+// Checks if the superblock and free block bitmap were initialized correctly
+int test_goal1() {
+  printf("\ntest_InitLLFS: ");
   InitLLFS();
   FILE* disk = fopen(vdisk_path, "r+");
   char* buffer = (char*)malloc(BLOCK_SIZE);
@@ -23,13 +26,21 @@ void test_InitLLFS() {
   int num_inodes_present = memcmp(buffer + sizeof(magic_number) + sizeof(num_blocks), &num_inodes, sizeof(num_inodes));
 
   read_block(disk, 1, buffer);
-  int bitmap = 0x03FF;
-  int bitmap_present = memcmp(buffer, &bitmap, sizeof(bitmap));
+  unsigned char* expected_bitmap = malloc(BLOCK_SIZE);
+  memset(expected_bitmap, 0xFF, BLOCK_SIZE);
+  memset(expected_bitmap, 0x00, 1); // blocks 0-7 reserved
+  memset(expected_bitmap+1, 0xf0, 1); // blocks 8-9: reserved; blocks 10-11: root directory
+  int bitmap_present = memcmp(buffer, expected_bitmap, BLOCK_SIZE);
+
+  free(expected_bitmap);
+  free(buffer);
+  fclose(disk);
 
   if (magic_number_present == 0 && num_blocks_present == 0 && num_blocks_present == 0 && bitmap_present == 0) {
-    printf("PASS\n");
+    printf("PASS\n\n");
+    return 1;
   } else {
-    printf("FAILURE:\n");
+    printf("FAIL\n\n");
     if (magic_number_present != 0)
       printf("Magic number not contained in first 4 bytes of superblock.\n");
     if (num_blocks_present != 0)
@@ -38,11 +49,23 @@ void test_InitLLFS() {
       printf("Number of i-nodes not contained in third 4 bytes of superblock.\n");
     if (bitmap_present != 0)
       printf("Free block vector not initialized correctly.\n");
+    return 0;
   }
-  free(buffer);
-  fclose(disk);
 }
 
-//void main() {
-//  test_InitLLFS();
-//}
+int main() {
+  int goal1 = test_goal1();
+
+  int total_tests   = 1;
+  int test_passes   = goal1;
+  int test_failures = total_tests - test_passes;
+
+  printf("\nTEST02 - REPORT\n"
+         "==========================================\n");
+  printf("Total number of tests: %d\n", total_tests);
+  printf("Tests passed: %d\n", test_passes);
+  printf("Tests failed: %d\n", test_failures);
+  printf("==========================================\n\n");
+
+  return EXIT_SUCCESS;
+}
