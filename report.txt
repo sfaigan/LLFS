@@ -1,0 +1,81 @@
+|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|
+| LITTLE LOG FILE SYSTEM |
+|       Shea Faigan      |
+|                        |
+|   /‾\‾‾‾‾‾‾‾‾‾‾‾‾‾‾\   |
+|  |   |     LLFS     |  |
+|   \_/______________/   |
+|________________________|
+
+
+1   DESIGN DECISIONS
+=================================================================================
+
+    1.1   Segment size
+    -------------------------------------------------------------------------
+    I decided to make the segment size 16 blocks. I chose this number because
+    it is small enough that if the program crashes, we will not lose a large
+    amount of data. Also, with 4096 blocks allowed, 255 full segments can be
+    written to the disk after formatting. The trade-off is that we are still
+    going to lose data (potentially up to 4 empty files). The decision here
+    was just a matter of balancing disk writes with data recoverability.
+    I felt that the reduced writes outweighed the small risk that the system
+    crashes and we lose some data. We can almost always recover everything
+    that has been written to disk. The reason I say almost always is really
+    just a safety net under the already existing safety nets in the code.
+    There is a chance that a file gets broken up across blocks and the inode
+    gets lost, in which case that file would probably become lost, but may
+    still be partially recoverable with some cleverness.
+
+    1.2   I-Nodes
+    -------------------------------------------------------------------------
+    I decided to make the maximum number of i-nodes 256, because we can fit
+    256 values in an unsigned char, which is what is used as the inode index
+    in a directory entry. The trade-off here is that we are limiting our file
+    system to 255 files (excluding the root directory)
+
+    Furthermore,
+
+    1.3   Free block vector
+    -------------------------------------------------------------------------
+    I decided to keep the free block vector in memory, then update it on disk
+    whenever the segment is written to the disk. Since it is in memory,
+    whenever a file or directory is updated (i.e., we have "old" blocks),
+    we immediately mark the out-of-date blocks as free and the new blocks
+    as full. This makes garbage collection a lot easier as only up-to-date
+    blocks will be marked as full, while everything else can safely be
+    overwritten when the log is compacted. The trade-off here is really just
+    that we are writing to disk every time we write the segment to disk, but
+    since the free block vector is in a fixed location, the additional cost
+    is relatively low. Of course, the benefits of being able to make garbage
+    collection more efficient outweigh this trade-off.
+
+    1.4   Checkpoint region
+    -------------------------------------------------------------------------
+    I decided to keep the imap in memory, then write it to the checkpoint
+    region (on disk) whenever the segment is written to the disk.
+    The checkpoint region is in the third block, right after the free block
+    bitmap. The typical alternative to this is to append an updated partial
+    imap to the log anytime an inode is updated (i.e., whenever a file/dir is
+    created, written to, or deleted). For my version of LLFS, I felt this
+    approach did not add enough benefit to be worth the increased complexity.
+    One major benefit to writing the imap to the log is that it would make
+    version history a bit easier to keep track of, and upon crashing it may
+    be easier to rollback. However, the approach I took still allows for
+    a reasonable recovery rate without rolling back further than needed.
+
+
+2   REFERENCES
+=================================================================================
+
+    2.1     CSC 360 Course Material
+            Lecture slides, tutorial notes, assignment guidelines, etc.
+
+    2.2     Log-structured File Systems - Operating Systems
+            http://pages.cs.wisc.edu/~remzi/OSTEP/file-lfs.pdf
+
+    2.3     Log-Structured File Systems (David Evans)
+            https://www.youtube.com/watch?v=KTCkW_6zz2k
+
+    2.4     The Design and Implementation of a Log-Structured File System
+            https://web.stanford.edu/~ouster/cgi-bin/papers/lfs.pdf

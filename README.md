@@ -89,6 +89,26 @@ NOTE: this function assumes the string provided is null-terminated.
 
 This function prints all the data in a file determined by a given name and path.
 
+## Tests
+There are 2 test files: _test01.c_ and _test02.c_.  
+* **test01** tests creating and mounting a disk (i.e., goal 1/InitLLFS)
+* **test02** tests the following:
+    * reading and writing of files in the root directory (goal 2a)
+    * creation of sub-directories (goal 2b)
+    * reading and writing of files in any directory (goal 2c)
+    * deletion of files and directories (goal 2d)
+    * crash recovery (goal 3)
+
+All core functionality is tested in these two test suites, including a simulated crash and recovery.  
+    * These tests also act as a good example of how to use LLFS
+
+### Running the tests
+```
+cd apps
+make
+./test01
+./test02
+```
 
 ## Future Work
 * Implement garbage collection
