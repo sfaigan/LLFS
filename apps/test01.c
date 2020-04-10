@@ -18,11 +18,11 @@ int test_goal2a() {
          "================================================================\n");
   InitLLFS();
   printf("Creating file1...\n");
-  create_file("/", "file1", DATA_FILE);
+  execute_touch("/", "file1");
   printf("Creating file2...\n");
-  create_file("/", "file2", DATA_FILE);
+  execute_touch("/", "file2");
   printf("Creating file3...\n");
-  create_file("/", "file3", DATA_FILE);
+  execute_touch("/", "file3");
   printf("\nExecuting ls in root directory...\n");
   execute_ls("");
   printf("\n");
@@ -311,13 +311,13 @@ int test_goal2c() {
   execute_mkdir(dir3_parent, dir3_name);
 
   printf("Creating files...\n");
-  create_file(file1_parent, file1_name, DATA_FILE);
-  create_file(file23_parent, file2_name, DATA_FILE);
-  create_file(file23_parent, file3_name, DATA_FILE);
-  create_file(file45_parent, file4_name, DATA_FILE);
-  create_file(file45_parent, file5_name, DATA_FILE);
-  create_file(file67_parent, file6_name, DATA_FILE);
-  create_file(file67_parent, file7_name, DATA_FILE);
+  execute_touch(file1_parent, file1_name);
+  execute_touch(file23_parent, file2_name);
+  execute_touch(file23_parent, file3_name);
+  execute_touch(file45_parent, file4_name);
+  execute_touch(file45_parent, file5_name);
+  execute_touch(file67_parent, file6_name);
+  execute_touch(file67_parent, file7_name);
 
   // Test writing and reading less than 512 bytes of text to an empty file
   printf("Writing text to file1... ");
@@ -524,13 +524,13 @@ int test_goal2d() {
   execute_mkdir(dir3_parent, dir3_name);
 
   printf("Creating files...\n");
-  create_file(file1_parent, file1_name, DATA_FILE);
-  create_file(file23_parent, file2_name, DATA_FILE);
-  create_file(file23_parent, file3_name, DATA_FILE);
-  create_file(file45_parent, file4_name, DATA_FILE);
-  create_file(file45_parent, file5_name, DATA_FILE);
-  create_file(file67_parent, file6_name, DATA_FILE);
-  create_file(file67_parent, file7_name, DATA_FILE);
+  execute_touch(file1_parent, file1_name);
+  execute_touch(file23_parent, file2_name);
+  execute_touch(file23_parent, file3_name);
+  execute_touch(file45_parent, file4_name);
+  execute_touch(file45_parent, file5_name);
+  execute_touch(file67_parent, file6_name);
+  execute_touch(file67_parent, file7_name);
 
   int root_inode_index = get_leaf_dir_inode_index(root_path);
   int dir1_inode_index = get_leaf_dir_inode_index(dir1_path);
@@ -653,14 +653,14 @@ int simulate_crash() {
   InitLLFS();
 
   // The following will be written to disk
-  create_file("/", "test", DATA_FILE);
+  execute_touch("/", "test");
   write_str_to_file("/", "test", "this is a test");
-  create_file("/", "foo", DIRECTORY);
-  create_file("/foo", "bar", DATA_FILE);
+  execute_mkdir("/", "foo");
+  execute_touch("/foo", "bar");
   write_str_to_file("/foo", "bar", "foobar");
 
   // The following will be in the buffer when we return, so we will lose it. It will not corrupt any of the files created before.
-  create_file("/foo", "baz", DATA_FILE);
+  execute_touch("/foo", "baz");
 
   printf("Simulating crash...\n");
   return EXIT_FAILURE; // return while there is still data in the buffer
@@ -686,12 +686,6 @@ int test_goal3() {
   read_file("/", "test", block);
   file_text_present = strcmp(test_string, block);
   free(block);
-
-  create_file("/", "test", DATA_FILE);
-  write_str_to_file("/", "test", "this is a test");
-  create_file("/", "foo", DIRECTORY);
-  create_file("/foo", "bar", DATA_FILE);
-  write_str_to_file("/foo", "bar", "foobar");
 
   root_inode_index = get_leaf_dir_inode_index("/");
   foo_inode_index = get_leaf_dir_inode_index("/foo");
