@@ -6,9 +6,10 @@
 #include "util.h"
 #include "../disk/driver.h"
 
-char buffer[BLOCK_SIZE*SEGMENT_SIZE];
-unsigned char free_block_bitmap[BLOCK_SIZE];
-BLK_NO imap[NUM_INODES];
+// Globals
+char buffer[BLOCK_SIZE*SEGMENT_SIZE]; // write to the buffer (segment), buffer to disk
+unsigned char free_block_bitmap[BLOCK_SIZE]; // holds what blocks are free/full
+BLK_NO imap[NUM_INODES]; // maps inode indexes to the most recent version of the inode
 
 int log_tail; // keeps track of the last block in the log
 int segment_tail; // keeps track of the last block in the segment
@@ -27,6 +28,8 @@ void get_directory_entries_from_inode_index(int inode_index, DirectoryEntry dir[
   free(inode);
 }
 
+// This is used when mounting to an existing vdisk
+// returns the block number of the most recently written block on the disk
 int get_log_tail_from_free_block_bitmap() {
   int i, j, k;
   for (i = NUM_BLOCKS - 1; i >= 0; i--) {
@@ -38,6 +41,8 @@ int get_log_tail_from_free_block_bitmap() {
   return -1;
 }
 
+// Writes the buffer to the disk
+// Also updates the checkpoint region and free block vector
 int write_segment_to_disk() {
   FILE* disk = fopen(vdisk_path, "rb+");
   char* block = calloc(BLOCK_SIZE, 1);
@@ -57,6 +62,7 @@ int write_segment_to_disk() {
   return SUCCESS;
 }
 
+// Allocate one block in the buffer
 int allocate_block(void* data) {
   // must have room in the buffer
   if (segment_tail >= SEGMENT_SIZE-1) {
@@ -73,7 +79,7 @@ int allocate_block(void* data) {
   return SUCCESS;
 }
 
-// Returns ERROR (-1) if no free inodes (no more files allowed)
+// If ERROR is returned, no more files are permitted
 int get_free_inode_index() {
   for (int i = 0; i < NUM_INODES; i++)
     if (imap[i] == 0)
@@ -81,6 +87,7 @@ int get_free_inode_index() {
   return ERROR;
 }
 
+// Allocates a new inode on the buffer
 int allocate_inode(INODE_NO inode_index, int size, int flags, BLK_NO* direct_blocks) {
   char* block = calloc(BLOCK_SIZE, 1);
   INode* new_inode = (INode*)malloc(sizeof(INode));
@@ -100,6 +107,7 @@ int allocate_inode(INODE_NO inode_index, int size, int flags, BLK_NO* direct_blo
   return SUCCESS;
 }
 
+// Get an inode from its inode index
 int get_inode(int inode_index, INode* inode) {
   BLK_NO inode_blk_no = imap[inode_index];
   if (!inode_blk_no) {
@@ -119,6 +127,7 @@ int get_inode(int inode_index, INode* inode) {
   return inode_blk_no;
 }
 
+// Returns the data block number if successful
 int get_data_block_from_inode(INode* inode, int block_index, char* block) {
   int data_block_no = inode->direct_blocks[block_index];
   if (!data_block_no) {
@@ -134,6 +143,7 @@ int get_data_block_from_inode(INode* inode, int block_index, char* block) {
   return data_block_no;
 }
 
+// Returns the data block number if successful
 int get_data_block_from_inode_index(int inode_index, int block_index, char* block) {
   INode* inode = (INode*)malloc(sizeof(INode));
   get_inode(inode_index, inode);
@@ -144,6 +154,7 @@ int get_data_block_from_inode_index(int inode_index, int block_index, char* bloc
   return data_block_no;
 }
 
+// Searches a given directory for a given entry, returns the inode index if found
 int get_file_inode_index(char* file_name, DirectoryEntry* parent_dir) {
   for (int i = 0; i < DIRECTORY_CAPACITY; i++) {
     if (!strcmp(parent_dir[i].file_name, file_name))
@@ -152,15 +163,17 @@ int get_file_inode_index(char* file_name, DirectoryEntry* parent_dir) {
   return NOT_FOUND;
 }
 
-int add_file_to_dir(char* file_name, INODE_NO inode_index, DirectoryEntry* parent_dir) {
-  if (get_file_inode_index(file_name, parent_dir) != NOT_FOUND) {
+// Given a file name and inode index, adds a directory entry to the provided directory
+int add_file_to_dir(char* file_name, INODE_NO inode_index, DirectoryEntry* dir) {
+  if (get_file_inode_index(file_name, dir) != NOT_FOUND) {
     fprintf(stderr, "ERROR: File %s already exists in parent directory.\n", file_name);
     return ERROR;
   }
+  // Search for a free directory entry in the directory, populate inode index and file name
   for (int i = 0; i < DIRECTORY_CAPACITY; i++) {
-    if (!parent_dir[i].inode_index) {
-      parent_dir[i].inode_index = inode_index;
-      strncpy(parent_dir[i].file_name, file_name, MAX_FILE_NAME_LENGTH+1); //+1 because of null terminator
+    if (!dir[i].inode_index) {
+      dir[i].inode_index = inode_index;
+      strncpy(dir[i].file_name, file_name, MAX_FILE_NAME_LENGTH+1); // +1 because of null terminator
       return SUCCESS;
     }
   }
@@ -168,16 +181,19 @@ int add_file_to_dir(char* file_name, INODE_NO inode_index, DirectoryEntry* paren
   return ERROR;
 }
 
+// Removes a given file from a given directory
 int remove_file_from_dir(char* file_name, DirectoryEntry* parent_dir) {
+  // Does this file exist?
   if (get_file_inode_index(file_name, parent_dir) == NOT_FOUND) {
     fprintf(stderr, "ERROR: Cannot remove the directory entry for file %s from the "
                     "provided directory because it does not exist.\n", file_name);
     return ERROR;
   }
+  // Search for the file and null it out
   for (int i = 0; i < DIRECTORY_CAPACITY; i++) {
     if (!strcmp(parent_dir[i].file_name, file_name)) {
       parent_dir[i].inode_index = 0;
-      strcpy(parent_dir[i].file_name, "empty"); //+1 because of null terminator
+      strcpy(parent_dir[i].file_name, "");
       return SUCCESS;
     }
   }
@@ -229,6 +245,7 @@ int get_leaf_dir_inode_index(char* path) {
   return parent_index;
 }
 
+// Create a file given a path, file name, and whether it is a directory or data file
 int create_file(char* path, char file_name[30], int type) {
   if (segment_tail+2 >= SEGMENT_SIZE-1)
     write_segment_to_disk();
@@ -250,7 +267,6 @@ int create_file(char* path, char file_name[30], int type) {
   char* block = calloc(BLOCK_SIZE, 1);
   DirectoryEntry parent_dir[DIRECTORY_CAPACITY];
 
-  // NOTE to self:
   // If the new file was not the root directory (there is a path)
   // This IF check happens again later to continue the work with the parent directory
   // but before we do that, we have to make the file itself, so these two blocks had to be broken up
@@ -321,14 +337,244 @@ int create_file(char* path, char file_name[30], int type) {
   return free_inode_index;
 }
 
+// Read a file into a provided buffer
+int read_file(char* path, char* file_name, char* buf) {
+  if ((!strlen(path) && !strlen(file_name)) || !strcmp(file_name, ROOT_DIR)) {
+    fprintf(stderr, "ERROR: Path invalid.\n");
+    return ERROR;
+  }
+
+  // check to see if path is valid
+  int parent_dir_inode_index = get_leaf_dir_inode_index(path);
+  if (parent_dir_inode_index == ERROR) {
+    fprintf(stderr, "ERROR: Cannot resolve path %s\n", path);
+    return ERROR;
+  }
+
+  int file_inode_index;
+  int i;
+  DirectoryEntry parent_dir[DIRECTORY_CAPACITY];
+  char* block = calloc(BLOCK_SIZE, 1);
+
+  // Get parent directory data block, store it in parent_dir
+  get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
+  memcpy(parent_dir, block, BLOCK_SIZE);
+  free(block);
+  file_inode_index = get_file_inode_index(file_name, parent_dir);
+  if (file_inode_index == NOT_FOUND) {
+     fprintf(stderr, "ERROR: Could not locate file %s in path %s.\n", file_name, path);
+     return ERROR;
+  }
+  INode* file_inode = (INode*)malloc(sizeof(INode));
+  get_inode(file_inode_index, file_inode);
+  int blocks_full = 0;
+
+  for (i = 0; i < 10; i++) {
+    if (file_inode->direct_blocks[i] != 0) {
+      blocks_full++;
+      get_data_block_from_inode(file_inode, i, buf+(i*BLOCK_SIZE));
+    }
+  }
+  free(file_inode);
+  return blocks_full;
+}
+
+// Delete a given file
+int delete_file(char* path, char* file_name) {
+  // Get parent directory i-node index
+  int parent_dir_inode_index = get_leaf_dir_inode_index(path);
+  if (parent_dir_inode_index == ERROR) {
+    fprintf(stderr, "ERROR: Could not delete file %s in directory %s.\n", file_name, path);
+    return ERROR;
+  }
+  char *block = calloc(BLOCK_SIZE, 1);
+  int parent_dir_inode_block_no = imap[parent_dir_inode_index];
+  int file_inode_index, file_inode_block_no;
+
+  // Get parent directory data block
+  DirectoryEntry parent_dir[DIRECTORY_CAPACITY];
+  int parent_dir_data_block_no = get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
+  memcpy(parent_dir, block, BLOCK_SIZE);
+  memset(block, 0, BLOCK_SIZE);
+
+  // Get file's i-node before we remove it from the directory
+  file_inode_index = get_file_inode_index(file_name, parent_dir);
+  file_inode_block_no = imap[file_inode_index];
+  INode* inode = (INode*)malloc(sizeof(INode));
+  get_inode(file_inode_index, inode);
+
+  if (inode->flags == DIRECTORY) {
+    DirectoryEntry dir[DIRECTORY_CAPACITY];
+    get_directory_entries_from_inode(inode, dir);
+    for (int i = 0; i < 10; i++) {
+      if (dir[i].inode_index != 0) {
+        fflush(stderr);
+        fprintf(stderr, "ERROR: Cannot delete non-empty directory.\n");
+        free(inode);
+        free(block);
+        return ERROR;
+      }
+    }
+  }
+
+  // Remove file from its parent directory
+  if (remove_file_from_dir(file_name, parent_dir) == ERROR) {
+    fprintf(stderr, "ERROR: Could not delete file %s/%s.\n", path, file_name);
+    free(block);
+    return ERROR;
+  }
+  memcpy(block, parent_dir, BLOCK_SIZE);
+
+  // Free i-node once we know it's been removed from the parent directory
+  imap[file_inode_index] = 0; // free inode index
+  set_block_free(free_block_bitmap, file_inode_block_no);  // Set parent directory's old data block free
+
+  // Free file's data blocks
+  for (int i = 0; i < 10; i++)
+    if (inode->direct_blocks[i] != 0)
+      set_block_free(free_block_bitmap, inode->direct_blocks[i]);
+
+  // Write new parent directory data block to buffer
+  if (allocate_block(block) == ERROR) {
+    fprintf(stderr, "ERROR: Unable to allocate a new block for data.\n");
+    free(block);
+    return ERROR;
+  }
+  memset(block, 0, BLOCK_SIZE);
+
+  // Set parent directory's old data block free
+  if (parent_dir_data_block_no != ERROR)
+    set_block_free(free_block_bitmap, parent_dir_data_block_no);
+
+  // Create new i-node for parent directory
+  BLK_NO parent_dir_inode_direct_blocks[10] = {0};
+  parent_dir_inode_direct_blocks[0] = log_tail+segment_tail+1;
+  allocate_inode(parent_dir_inode_index, 0, DIRECTORY, parent_dir_inode_direct_blocks);
+
+  // Set parent directory's old inode block free
+  if (parent_dir_inode_block_no != 0)
+    set_block_free(free_block_bitmap, parent_dir_inode_block_no);
+
+  // update free block vector
+  free(block);
+  if (inode) free(inode);
+  return 0;
+}
+
+// Create the root directory and write it to disk
+int create_root_directory() {
+  create_file("", ROOT_DIR, DIRECTORY);
+  write_segment_to_disk();
+  return 0;
+}
+
+// Create a blank disk
+int create_disk() {
+  FILE* disk = fopen(vdisk_path, "w+");
+  char* zeros = calloc(BLOCK_SIZE * NUM_BLOCKS, 1);
+  fwrite(zeros, BLOCK_SIZE * NUM_BLOCKS, 1, disk);
+  free(zeros);
+  fclose(disk);
+  return EXIT_SUCCESS;
+}
+
+// Create and mount the disk
+void InitLLFS() {
+  int i;
+
+  /* CREATE DISK */
+  // Fill with 0's
+  if (create_disk() == ERROR) {
+    fprintf(stderr, "ERROR: Unable to create disk.\n");
+    exit(EXIT_FAILURE);
+  }
+
+  /* FORMAT DISK */
+  // Open disk
+  FILE* disk = fopen(vdisk_path, "rb+");
+  if (!disk) {
+    fprintf(stderr, "ERROR: Could not open %s.\n", vdisk_path);
+    exit(EXIT_FAILURE);
+  }
+
+  // Initialize a single block buffer
+  char* block = calloc(BLOCK_SIZE, 1);
+
+  // SUPERBLOCK
+  // Initialize Superblock
+  Superblock* sb = (Superblock*)malloc(sizeof(Superblock));
+  sb->magic_number = MAGIC_NUMBER;
+  sb->num_blocks = NUM_BLOCKS;
+  sb->num_inodes = NUM_INODES;
+
+  // Write the superblock to the disk
+  memcpy(block, sb, sizeof(Superblock));
+  write_block(disk, SUPERBLOCK_INDEX, block);
+  memset(block, 0, BLOCK_SIZE);
+
+  // FREE BLOCK VECTOR
+  // Initialize the free block bitmap
+  memset(free_block_bitmap, 0xFF, BLOCK_SIZE);
+  for (i = 0; i < 10; i++)
+    set_block_full(free_block_bitmap, i);
+
+  // Write free block bitmap to the disk
+  memcpy(block, free_block_bitmap, BLOCK_SIZE);
+  write_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
+
+  // Initialize imap
+  for(i = 0; i < NUM_INODES; i++)
+    imap[i] = 0; // assume 0 means free since 0 would never be the block number of an inode
+
+  // Clean up
+  log_tail = 9; // last used block
+  memset(buffer, 0, BLOCK_SIZE * SEGMENT_SIZE); // flush buffer
+  segment_tail = -1;
+  free(sb);
+  free(block);
+  fclose(disk);
+
+  create_root_directory();
+}
+
+// Mount to an existing vdisk
+void AttachLLFS() {
+  FILE* disk = fopen(vdisk_path, "rb");
+  if (!disk) {
+    fprintf(stderr, "ERROR: Could not open %s.\n", vdisk_path);
+    exit(EXIT_FAILURE);
+  }
+  // Initialize a single block buffer
+  char* block = calloc(BLOCK_SIZE, 1);
+
+  // Load free block bitmap into memory
+  read_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
+  memcpy(free_block_bitmap, block, BLOCK_SIZE);
+  memset(block, 0, BLOCK_SIZE);
+
+  // Load imap into memory
+  read_block(disk, IMAP_BLOCK_INDEX, block);
+  memcpy(imap, block, BLOCK_SIZE);
+
+  // Clean up
+  free(block);
+  fclose(disk);
+
+  // Set the log and segment tails
+  log_tail = get_log_tail_from_free_block_bitmap(); // last used block
+  if (log_tail == -1) {
+    fprintf(stderr, "ERROR: Failed to recover log tail block number.\n");
+    exit(EXIT_FAILURE);
+  }
+  segment_tail = -1; // segment is empty
+
+  // Flush the buffer
+  memset(buffer, 0, BLOCK_SIZE * SEGMENT_SIZE);
+}
+
+// USER FACING FUNCTIONS
 // Assumes string is null terminated!
 int write_str_to_file(char* path, char* file_name, char* string) {
-  // make sure it's not a directory
-  // if file does not exist, create it
-  // create as many data blocks as needed for text
-  // update/create file inode
-  // increase size
-
   // eviscerate the null terminator
   char text[strlen(string)];
   memcpy(text, string, strlen(string));
@@ -412,237 +658,6 @@ int write_str_to_file(char* path, char* file_name, char* string) {
   return allocate_inode(file_inode_index, 0, DATA_FILE, data_block_numbers);
 }
 
-int read_file(char* path, char* file_name, char* buf) {
-  if ((!strlen(path) && !strlen(file_name)) || !strcmp(file_name, ROOT_DIR)) {
-    fprintf(stderr, "ERROR: Path invalid.\n");
-    return ERROR;
-  }
-
-  // check to see if path is valid
-  int parent_dir_inode_index = get_leaf_dir_inode_index(path);
-  if (parent_dir_inode_index == ERROR) {
-    fprintf(stderr, "ERROR: Cannot resolve path %s\n", path);
-    return ERROR;
-  }
-
-  int file_inode_index;
-  int i;
-  DirectoryEntry parent_dir[DIRECTORY_CAPACITY];
-  char* block = calloc(BLOCK_SIZE, 1);
-
-  // Get parent directory data block, store it in parent_dir
-  get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
-  memcpy(parent_dir, block, BLOCK_SIZE);
-  free(block);
-  file_inode_index = get_file_inode_index(file_name, parent_dir);
-  if (file_inode_index == NOT_FOUND) {
-     fprintf(stderr, "ERROR: Could not locate file %s in path %s.\n", file_name, path);
-     return ERROR;
-  }
-  INode* file_inode = (INode*)malloc(sizeof(INode));
-  get_inode(file_inode_index, file_inode);
-  int blocks_full = 0;
-
-  for (i = 0; i < 10; i++) {
-    if (file_inode->direct_blocks[i] != 0) {
-      blocks_full++;
-      get_data_block_from_inode(file_inode, i, buf+(i*BLOCK_SIZE));
-    }
-  }
-  free(file_inode);
-  return blocks_full;
-}
-
-int delete_file(char* path, char* file_name) {
-  // Get parent directory i-node index
-  int parent_dir_inode_index = get_leaf_dir_inode_index(path);
-  if (parent_dir_inode_index == ERROR) {
-    fprintf(stderr, "ERROR: Could not delete file %s in directory %s.\n", file_name, path);
-    return ERROR;
-  }
-  char *block = calloc(BLOCK_SIZE, 1);
-  int parent_dir_inode_block_no = imap[parent_dir_inode_index];
-  int file_inode_index, file_inode_block_no;
-
-  // Get parent directory data block
-  DirectoryEntry parent_dir[DIRECTORY_CAPACITY];
-  int parent_dir_data_block_no = get_data_block_from_inode_index(parent_dir_inode_index, 0, block);
-  memcpy(parent_dir, block, BLOCK_SIZE);
-  memset(block, 0, BLOCK_SIZE);
-
-  // Get file's i-node before we remove it from the directory
-  file_inode_index = get_file_inode_index(file_name, parent_dir);
-  file_inode_block_no = imap[file_inode_index];
-  INode* inode = (INode*)malloc(sizeof(INode));
-  get_inode(file_inode_index, inode);
-
-  if (inode->flags == DIRECTORY) {
-    DirectoryEntry dir[DIRECTORY_CAPACITY];
-    get_directory_entries_from_inode(inode, dir);
-    for (int i = 0; i < 10; i++) {
-      if (dir[i].inode_index != 0) {
-        fflush(stderr);
-        fprintf(stderr, "ERROR: Cannot delete non-empty directory.\n");
-        free(inode);
-        free(block);
-        return ERROR;
-      }
-    }
-  }
-
-  // Remove file from its parent directory
-  if (remove_file_from_dir(file_name, parent_dir) == ERROR) {
-    fprintf(stderr, "ERROR: Could not delete file %s/%s.\n", path, file_name);
-    free(block);
-    return ERROR;
-  }
-  memcpy(block, parent_dir, BLOCK_SIZE);
-
-  // Free i-node once we know it's been removed from the parent directory
-  imap[file_inode_index] = 0; // free inode index
-  set_block_free(free_block_bitmap, file_inode_block_no);  // Set parent directory's old data block free
-
-  // Free file's data blocks
-  for (int i = 0; i < 10; i++)
-    if (inode->direct_blocks[i] != 0)
-      set_block_free(free_block_bitmap, inode->direct_blocks[i]);
-
-  // Write new parent directory data block to buffer
-  if (allocate_block(block) == ERROR) {
-    fprintf(stderr, "ERROR: Unable to allocate a new block for data.\n");
-    free(block);
-    return ERROR;
-  }
-  memset(block, 0, BLOCK_SIZE);
-
-  // Set parent directory's old data block free
-  if (parent_dir_data_block_no != ERROR)
-    set_block_free(free_block_bitmap, parent_dir_data_block_no);
-
-  // Create new i-node for parent directory
-  BLK_NO parent_dir_inode_direct_blocks[10] = {0};
-  parent_dir_inode_direct_blocks[0] = log_tail+segment_tail+1;
-  allocate_inode(parent_dir_inode_index, 0, DIRECTORY, parent_dir_inode_direct_blocks);
-
-  // Set parent directory's old inode block free
-  if (parent_dir_inode_block_no != 0)
-    set_block_free(free_block_bitmap, parent_dir_inode_block_no);
-
-  // update free block vector
-  free(block);
-  if (inode) free(inode);
-  return 0;
-}
-
-int create_root_directory() {
-  create_file("", ROOT_DIR, DIRECTORY);
-  write_segment_to_disk();
-  return 0;
-}
-
-int create_disk() {
-  FILE* disk = fopen(vdisk_path, "w+");
-  char* zeros = calloc(BLOCK_SIZE * NUM_BLOCKS, 1);
-  fwrite(zeros, BLOCK_SIZE * NUM_BLOCKS, 1, disk);
-  free(zeros);
-  fclose(disk);
-  return EXIT_SUCCESS;
-}
-
-// Create and mount the disk (I think)
-void InitLLFS() {
-  int i;
-
-  /* CREATE DISK */
-  // Fill with 0's
-  if (create_disk() == ERROR) {
-    fprintf(stderr, "ERROR: Unable to create disk.\n");
-    exit(EXIT_FAILURE);
-  }
-
-  /* FORMAT DISK */
-  // Open disk
-  FILE* disk = fopen(vdisk_path, "rb+");
-  if (!disk) {
-    fprintf(stderr, "ERROR: Could not open %s.\n", vdisk_path);
-    exit(EXIT_FAILURE);
-  }
-
-  // Initialize a single block buffer
-  char* block = calloc(BLOCK_SIZE, 1);
-
-  // SUPERBLOCK
-  // Initialize Superblock
-  Superblock* sb = (Superblock*)malloc(sizeof(Superblock));
-  sb->magic_number = MAGIC_NUMBER;
-  sb->num_blocks = NUM_BLOCKS;
-  sb->num_inodes = NUM_INODES;
-
-  // Write the superblock to the disk
-  memcpy(block, sb, sizeof(Superblock));
-  write_block(disk, SUPERBLOCK_INDEX, block);
-  memset(block, 0, BLOCK_SIZE);
-
-  // FREE BLOCK VECTOR
-  // Initialize the free block bitmap
-  memset(free_block_bitmap, 0xFF, BLOCK_SIZE);
-  for (i = 0; i < 10; i++)
-    set_block_full(free_block_bitmap, i);
-
-  // Write free block bitmap to the disk
-  memcpy(block, free_block_bitmap, BLOCK_SIZE);
-  write_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
-
-  // Initialize imap
-  for(i = 0; i < NUM_INODES; i++)
-    imap[i] = 0; // assume 0 means free since 0 would never be the block number of an inode
-
-  // Clean up
-  log_tail = 9; // last used block
-  memset(buffer, 0, BLOCK_SIZE * SEGMENT_SIZE); // flush buffer
-  segment_tail = -1;
-  free(sb);
-  free(block);
-  fclose(disk);
-
-  create_root_directory();
-}
-
-void AttachLLFS() {
-  FILE* disk = fopen(vdisk_path, "rb");
-  if (!disk) {
-    fprintf(stderr, "ERROR: Could not open %s.\n", vdisk_path);
-    exit(EXIT_FAILURE);
-  }
-  // Initialize a single block buffer
-  char* block = calloc(BLOCK_SIZE, 1);
-
-  // Load free block bitmap into memory
-  read_block(disk, FREE_BLOCK_BITMAP_INDEX, block);
-  memcpy(free_block_bitmap, block, BLOCK_SIZE);
-  memset(block, 0, BLOCK_SIZE);
-
-  // Load imap into memory
-  read_block(disk, IMAP_BLOCK_INDEX, block);
-  memcpy(imap, block, BLOCK_SIZE);
-
-  // Clean up
-  free(block);
-  fclose(disk);
-
-  // Set the log and segment tails
-  log_tail = get_log_tail_from_free_block_bitmap(); // last used block
-  if (log_tail == -1) {
-    fprintf(stderr, "ERROR: Failed to recover log tail block number.\n");
-    exit(EXIT_FAILURE);
-  }
-  segment_tail = -1; // segment is empty
-
-  // Flush the buffer
-  memset(buffer, 0, BLOCK_SIZE * SEGMENT_SIZE);
-}
-
-// USER FACING FUNCTIONS
 int execute_ls(char* path) {
   // check to see if path is valid
   int parent_dir_inode_index = get_leaf_dir_inode_index(path);
